@@ -111,9 +111,10 @@ textarea{height:auto;min-height:110px;padding:8px 10px;font:12.5px/1.5 var(--mon
 .seg{display:inline-flex;padding:2px;gap:2px;border-radius:var(--r);background:var(--accent);border:1px solid var(--border)}
 .seg button{height:24px;padding:0 10px;border:0;border-radius:6px;background:none;color:var(--mfg);font:500 12px var(--sans);cursor:pointer}
 .seg button.on{background:var(--card);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.scrim{display:none}
 .code{position:relative;margin-top:10px}
 .code pre{margin:0;padding:10px 40px 10px 12px;background:var(--muted);border:1px solid var(--border);border-radius:var(--r);overflow:auto;line-height:1.55;white-space:pre}
-.code .btn{position:absolute;top:6px;right:6px}
+.code .btn{position:absolute;top:6px;right:6px;background:var(--muted)}
 .url{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}
 .url .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
@@ -125,7 +126,9 @@ textarea{height:auto;min-height:110px;padding:8px 10px;font:12.5px/1.5 var(--mon
 .stat b{display:block;font-size:20px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .stat span{font-size:12px;color:var(--mfg)}
 .stat b.bad{color:var(--efg)}
-.quota{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;font-size:12px;margin-top:8px}
+/* One grid for all of an account's windows, so the bars line up whatever the text beside them. */
+.quotas{display:grid;grid-template-columns:44px 1fr auto;gap:8px 10px;align-items:center;font-size:12px;margin-top:8px}
+.quota{display:contents}
 .bar{height:4px;border-radius:4px;background:var(--accent);overflow:hidden}
 .bar i{display:block;height:100%;border-radius:4px;background:color-mix(in srgb,var(--fg) 55%,transparent)}
 .bar i.warn{background:var(--warning)}.bar i.bad{background:var(--error)}
@@ -137,8 +140,8 @@ textarea{height:auto;min-height:110px;padding:8px 10px;font:12.5px/1.5 var(--mon
 .tbl td.n,.tbl th.n{text-align:right;font-variant-numeric:tabular-nums}
 .tbl td.bad{color:var(--efg)}
 .tblw{overflow-x:auto}
-.chart{display:flex;align-items:flex-end;gap:4px;height:132px;padding:16px 16px 12px}
-.chart div{flex:1;min-height:2px;border-radius:3px 3px 1px 1px;background:color-mix(in srgb,var(--primary) 70%,transparent);position:relative;transition:background .1s}
+.chart{display:flex;align-items:flex-end;justify-content:space-around;gap:4px;height:132px;padding:16px 16px 12px}
+.chart div{flex:1;max-width:64px;min-height:2px;border-radius:3px 3px 1px 1px;background:color-mix(in srgb,var(--primary) 70%,transparent);position:relative;transition:background .1s}
 .chart div:hover{background:var(--primary)}
 .chart div:hover::after{content:attr(data-t);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--popover);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font:12px var(--sans);color:var(--fg);white-space:nowrap;box-shadow:var(--shadow);z-index:2}
 
@@ -175,7 +178,8 @@ textarea{height:auto;min-height:110px;padding:8px 10px;font:12.5px/1.5 var(--mon
 .pick button{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--muted);color:var(--fg);font:500 14px var(--sans);cursor:pointer;text-align:left}
 .pick button:hover{background:var(--accent);border-color:var(--input)}
 .pick small{display:block;font-weight:400;font-size:12px;color:var(--mfg)}
-.toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:30}
+.toasts{position:fixed;inset:auto 16px 16px auto;margin:0;padding:0;border:0;background:none;color:inherit;overflow:visible;flex-direction:column;gap:8px}
+.toasts:popover-open{display:flex}
 .toast{background:var(--popover);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:10px 14px;font-size:13px;max-width:380px;animation:pop .14s}
 .toast.bad{color:var(--efg)}
 .login{min-height:100vh;display:grid;place-items:center;padding:20px}
@@ -190,6 +194,7 @@ textarea{height:auto;min-height:110px;padding:8px 10px;font:12.5px/1.5 var(--mon
   .top .menu{display:inline-flex}
   .side{position:fixed;inset:0 auto 0 0;z-index:15;transform:translateX(-100%);transition:transform .18s;box-shadow:var(--shadow)}
   .side.open{transform:none}
+  .side.open+.scrim{display:block;position:fixed;inset:0;z-index:14;background:rgba(0,0,0,.5)}
   .menu{display:inline-flex}
   .top{padding:0 12px}
   .page{padding:4px 12px 48px;gap:24px}
@@ -223,13 +228,14 @@ textarea{height:auto;min-height:110px;padding:8px 10px;font:12.5px/1.5 var(--mon
       <button class="side-btn" id="logout"></button>
     </div>
   </aside>
+  <div class="scrim" onclick="$('#side').classList.remove('open')"></div>
   <div class="main">
     <header class="top"><button class="btn ghost icon menu" onclick="$('#side').classList.toggle('open')" aria-label="Menu"></button><h1 id="title"></h1><span class="grow"></span><div class="inline" id="actions"></div></header>
     <div class="scroll" id="scroll"><div class="page" id="main"></div></div>
   </div>
 </div>
 <div id="dlg"></div>
-<div class="toasts" id="toasts"></div>
+<div class="toasts" id="toasts" popover="manual"></div>
 <script>
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -267,8 +273,14 @@ const PAGES=[['overview','Overview'],['accounts','Accounts'],['keys','API keys']
 
 let TOKEN=localStorage.getItem('clipx_token')||'';
 let S=null,page='overview',flow=null,usageDays=7,usageData=null,reqs=null,lastFp='',connMode=null;
-const hashTok=location.hash.match(/token=([^&]+)/);
-if(hashTok){TOKEN=decodeURIComponent(hashTok[1]);localStorage.setItem('clipx_token',TOKEN);history.replaceState(null,'',location.pathname+'#overview')}
+// A #token= link signs in, on first load or when opened in a tab that already has the page.
+function takeHashToken(){
+  const m=location.hash.match(/token=([^&]+)/);
+  if(!m)return false;
+  TOKEN=decodeURIComponent(m[1]);localStorage.setItem('clipx_token',TOKEN);history.replaceState(null,'',location.pathname+'#overview');
+  return true;
+}
+takeHashToken();
 
 async function api(path,opt={}){
   const r=await fetch('api/'+path,{...opt,headers:{'authorization':'Bearer '+TOKEN,'content-type':'application/json'},body:opt.body?JSON.stringify(opt.body):undefined});
@@ -277,7 +289,8 @@ async function api(path,opt={}){
   if(!r.ok)throw new Error(j.error||('HTTP '+r.status));
   return j;
 }
-function toast(m,bad){const t=document.createElement('div');t.className='toast'+(bad?' bad':'');t.textContent=m;$('#toasts').append(t);setTimeout(()=>t.remove(),2800)}
+// Toasts live in a popover so they show above an open dialog; reopening it puts it on top.
+function toast(m,bad){const c=$('#toasts'),t=document.createElement('div');t.className='toast'+(bad?' bad':'');t.textContent=m;c.append(t);if(c.matches(':popover-open'))c.hidePopover();c.showPopover();setTimeout(()=>{t.remove();if(!c.children.length)c.hidePopover()},2800)}
 function showLogin(err){$('#app').classList.add('hidden');$('#login').classList.remove('hidden');$('#loginerr').textContent=err||'';$('#tok').focus()}
 $('#loginf').onsubmit=async e=>{e.preventDefault();TOKEN=$('#tok').value.trim();localStorage.setItem('clipx_token',TOKEN);await boot()};
 $('#logout').innerHTML=ic('logout')+'Sign out';
@@ -322,7 +335,7 @@ function route(){
   connMode=null;render();$('#scroll').scrollTop=0;
   if(page==='usage')loadUsage();
 }
-window.onhashchange=route;
+window.onhashchange=()=>takeHashToken()?boot():route();
 // Re-render only when something visible changed, so controls are not swapped out under the cursor.
 const fingerprint=()=>JSON.stringify({...S,now:0,uptime:page==='overview'?Math.floor(S.uptime/60):0,rss:page==='overview'?Math.round(S.rss/1e5):0});
 async function refresh(){if(!TOKEN||document.hidden||$('#app').classList.contains('hidden'))return;try{S=await api('state');if(!busy()&&fingerprint()!==lastFp)render()}catch(e){}}
@@ -334,7 +347,7 @@ function render(){
   lastFp=fingerprint();
   $('#ver').textContent='v'+S.version;
   const t=S.tunnel,c=S.connect;
-  $('#conn').innerHTML=c.mode==='off'?`<i class="dot"></i><span>Local only</span>`:t.connected?`<i class="dot ok"></i><span title="${esc(t.public_url)}">${esc((t.public_url||'').replace(/^https?:\/\//,''))}</span>`:`<i class="dot warn"></i><span>Connecting…</span>`;
+  $('#conn').innerHTML=c.mode==='off'?`<i class="dot"></i><span>Local only</span>`:t.connected?`<i class="dot ok"></i><span title="${esc(t.public_url)}">${esc((t.public_url||'').replace(/^https?:\/\//,''))}</span>`:t.error?`<i class="dot bad"></i><span>Not connected</span>`:`<i class="dot warn"></i><span>Connecting…</span>`;
   const [title,acts,body]=({overview,accounts,keys,usage,connect,settings}[page]||overview)();
   $('#title').textContent=title;$('#actions').innerHTML=acts||'';$('#main').innerHTML=body;
 }
@@ -351,7 +364,7 @@ function overview(){
     ${row('Base URL',`Use it with any <a class="link" href="#keys">API key</a>. Add <code>/a/&lt;label&gt;</code> to pin a tool to one account.`,urlCtl(b))}
     ${row('Claude Code','Set these in your shell, then run <code>claude</code>.','',code(ccEnv))}
     ${row('Codex','Add this to <code>~/.codex/config.toml</code> and export <code>CLIPX_API_KEY</code>.','',code(codex))}
-    ${row('OpenAI-compatible apps','Chat Completions with <code>claude-*</code> and <code>gpt-*</code> models.','',code(`base url: ${b}/v1\napi key:  <clipx key>`))}`)}
+    ${row('OpenAI-compatible apps','Chat Completions with <code>claude-*</code>, <code>gpt-*</code> and <code>gemini-*</code> models.','',code(`base url: ${b}/v1\napi key:  <clipx key>`))}`)}
   ${sec('Recent requests',reqTable(S.recent))}`];
 }
 
@@ -362,8 +375,8 @@ function reqTable(list){
 }
 
 function quota(a){
-  if(!a.quota||!a.quota.length)return `<div class="row-d" style="margin-top:8px">Usage limits show after the first request.</div>`;
-  return a.quota.map(q=>`<div class="quota"><span class="mono">${esc(q.name)}</span><div class="bar"><i class="${q.used_pct>=90?'bad':q.used_pct>=70?'warn':''}" style="width:${q.used_pct}%"></i></div><span class="mut">${q.used_pct.toFixed(0)}% used${q.resets_at?' · resets in '+dur(q.resets_at-S.now):''}</span></div>`).join('');
+  if(!a.quota||!a.quota.length)return `<div class="row-d" style="margin-top:8px">${a.provider==='gemini'?'Google does not report usage limits.':'Usage limits show after the first request.'}</div>`;
+  return '<div class="quotas">'+a.quota.map(q=>`<div class="quota"><span class="mono">${esc(q.name)}</span><div class="bar"><i class="${q.used_pct>=90?'bad':q.used_pct>=70?'warn':''}" style="width:${q.used_pct}%"></i></div><span class="mut">${q.used_pct.toFixed(0)}% used${q.resets_at?' · resets in '+dur(q.resets_at-S.now):''}</span></div>`).join('')+'</div>';
 }
 
 function accounts(){
@@ -375,7 +388,7 @@ function accounts(){
     const who=[a.email,a.org&&a.org!==a.email?a.org:'',a.linked?'linked to '+a.linked:''].filter(Boolean).map(esc).join(' · ');
     const tok=a.linked?'token follows the linked file':a.expires_at?(a.expires_at>S.now?'token expires in '+dur(a.expires_at-S.now):'token expired'):'token expiry unknown';
     return `<div class="acct"><div class="acct-h"><span class="pico">${prov(a.provider).icon}</span>
-      <div class="acct-n"><div class="row-t">${esc(a.label)}${badge(stTxt,tone)}${a.plan?badge(a.plan,'info'):''}</div><div class="row-d" title="${who}">${who||'&nbsp;'}</div></div>
+      <div class="acct-n"><div class="row-t">${esc(a.label)}${badge(stTxt,tone)}${a.plan||a.tier?badge(a.plan||a.tier.replace(/-tier$/,'').toLowerCase(),'info'):''}</div><div class="row-d" title="${who}">${who||'&nbsp;'}</div></div>
       ${sw(!a.disabled,`patchAcc(${js(a.id)},{disabled:${!a.disabled}})`,a.disabled?'Turn on':'Turn off')}</div>
       <div class="acct-b">${quota(a)}${a.last_error?`<div class="err">${esc(a.last_error)}</div>`:''}
       <div class="acct-f"><span class="meta">${num(a.requests)} request${a.requests===1?'':'s'} · ${num(a.input_tokens)} in · ${num(a.output_tokens)} out · ${tok} · used ${ago(a.last_used)}</span>
@@ -412,7 +425,7 @@ function flowDialog(){
 async function pollFlow(){const id=flow&&flow.flow_id;while(flow&&flow.flow_id===id){await new Promise(r=>setTimeout(r,2000));if(!flow||flow.flow_id!==id)return;try{const s=await api('login/status/'+id);if(s.done){flow=null;closeDialog();await reload();toast('Account added');return}}catch(e){return}}}
 async function completeLogin(){const v=$('#cb').value.trim();if(!v)return;try{const r=await api('login/complete',{method:'POST',body:{flow_id:flow.flow_id,callback:v}});flow=null;closeDialog();await reload();toast('Added '+r.account.label)}catch(e){$('#flowerr').textContent=e.message}}
 function importDialog(){
-  dialog(`<div class="dlg-h"><h3>Import accounts</h3><p>Paste a CLIProxyAPI auth file (claude-*.json, codex-*.json) or a clipx account file. An array works too.</p></div>
+  dialog(`<div class="dlg-h"><h3>Import accounts</h3><p>Paste a CLIProxyAPI auth file (claude-*.json, codex-*.json, gemini-*.json) or a clipx account file. An array works too.</p></div>
   <div class="dlg-b"><textarea id="impjson" placeholder='{"type":"claude","access_token":"…","refresh_token":"…"}'></textarea>
   <div class="row-in" style="gap:16px"><div><div class="row-t" style="font-size:13px">Don't refresh these tokens</div><p class="row-d">Turn on while another tool still owns the login. Two tools refreshing one login log each other out. On the box, <code>clipx import --link</code> also follows the file for new tokens.</p></div><button class="sw" id="impnr" role="switch" onclick="this.classList.toggle('on')"></button></div></div>
   <div class="dlg-f">${btn('Cancel','closeDialog()','ghost')}${btn('Import','doImport()','pri')}</div>`);
@@ -448,7 +461,9 @@ function usage(){
   const seg=`<div class="seg">${[1,7,30,90].map(n=>`<button class="${n===usageDays?'on':''}" onclick="usageDays=${n};loadUsage()">${n===1?'Today':n+' days'}</button>`).join('')}</div>`;
   const d=usageData;
   if(!d)return ['Usage',seg,'<div class="empty">Loading…</div>'];
-  const days=Object.entries(d.by_day),max=Math.max(1,...days.map(([,t])=>t.input+t.output));
+  // One bar per day in the range, so quiet days show as gaps instead of disappearing.
+  const zero={requests:0,input:0,output:0,cache_read:0,failures:0};
+  const days=Array.from({length:usageDays},(_,i)=>{const day=new Date((S.now-(usageDays-1-i)*86400)*1000).toISOString().slice(0,10);return [day,d.by_day[day]||zero]}),max=Math.max(1,...days.map(([,t])=>t.input+t.output));
   const tot=days.reduce((a,[,t])=>({r:a.r+t.requests,i:a.i+t.input,o:a.o+t.output}),{r:0,i:0,o:0});
   const tbl=(head,obj)=>{const rows=Object.entries(obj).sort((a,b)=>b[1].requests-a[1].requests);return rows.length?`<div class="tblw"><table class="tbl"><tr><th>${head}</th><th class="n">Requests</th><th class="n">Failed</th><th class="n">Input</th><th class="n">Cached</th><th class="n">Output</th></tr>${rows.map(([k,t])=>`<tr><td class="mono">${esc(k)}</td><td class="n">${num(t.requests)}</td><td class="n ${t.failures?'bad':''}">${num(t.failures)}</td><td class="n">${num(t.input)}</td><td class="n">${num(t.cache_read)}</td><td class="n">${num(t.output)}</td></tr>`).join('')}</table></div>`:'<div class="empty">Nothing yet.</div>'};
   return ['Usage',seg,`
@@ -467,7 +482,9 @@ const MODES=[
 ];
 function connect(){
   const t=S.tunnel,c=S.connect,m=connMode||c.mode;
-  const st=c.mode==='off'?badge('Off'):t.connected?badge('Connected','ok'):badge('Connecting','warn');
+  const st=c.mode==='off'?badge('Off'):t.connected?badge('Connected','ok'):t.error?badge('Not connected','bad'):badge('Connecting','warn');
+  // What to try next when Tailscale refuses Funnel, the most common setup failure.
+  const fix=c.mode==='tailscale'&&!c.tailnet_only&&/funnel/i.test(t.error||'')?' Turn on Tailnet only below to keep it on your own devices, or pick Cloudflare for a public address.':'';
   const fields=m==='tailscale'?`
     ${row('HTTPS port','Funnel works on 443, 8443 and 10000. clipx takes <code>/</code> on that port and leaves other paths alone.',`<select id="tsport" style="width:110px">${[443,8443,10000].map(p=>`<option ${p===c.ts_port?'selected':''}>${p}</option>`).join('')}</select>`)}
     ${row('Tailnet only','Keep the address on your own devices instead of the internet.',sw(c.tailnet_only,"this.classList.toggle('on')").replace('class="sw','id="tsonly" class="sw'))}`
@@ -476,7 +493,7 @@ function connect(){
     ${row('Name','Your box shows up as <code>/t/&lt;name&gt;/</code> on the relay.',`<input id="rname" value="${esc(c.name||'')}" placeholder="my-box" style="width:260px">`)}
     ${row('Relay secret','Only if the relay asks for one.',`<input id="rsec" type="password" style="width:260px">`)}`:'';
   return ['Remote access','',`
-  ${sec('Status',row(st+(c.mode==='off'?'':` <span class="mut" style="font-weight:400">${esc(MODES.find(x=>x[0]===c.mode)?.[1]||c.mode)}</span>`),t.error&&!t.connected?`<span style="color:var(--efg)">${esc(t.error)}</span>`:S.via_tunnel?'You are viewing this page through the tunnel.':c.mode==='off'?'Only this machine can reach clipx.':'',t.connected&&t.public_url?urlCtl(t.public_url):''))}
+  ${sec('Status',row(st+(c.mode==='off'?'':` <span class="mut" style="font-weight:400">${esc(MODES.find(x=>x[0]===c.mode)?.[1]||c.mode)}</span>`),t.error&&!t.connected?`<span style="color:var(--efg)">${esc(t.error)}</span>${fix}`:S.via_tunnel?'You are viewing this page through the tunnel.':c.mode==='off'?'Only this machine can reach clipx.':'',t.connected&&t.public_url?urlCtl(t.public_url):''))}
   ${sec('Mode',MODES.map(([k,n,d])=>`<div class="row radio ${m===k?'on':''}" onclick="connMode=${js(k)};render()"><span class="rad"></span><div><div class="row-t">${n}</div><p class="row-d">${d}</p></div></div>`).join('')+fields,
     btn('Save','saveConnect()','pri xs'))}
   <div class="note">${ic('info')}<span>The dashboard needs the admin token and the API needs a key, however you reach this box.</span></div>`];

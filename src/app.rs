@@ -158,7 +158,11 @@ impl std::fmt::Display for PickError {
             PickError::Exhausted(p) => write!(f, "every {} account is cooling down, disabled or needs login", p.as_str()),
             PickError::NoSuchAccount(n) => write!(f, "no account named {n}"),
             PickError::WrongProvider(n, p) => write!(f, "account {n} is a {} account", p.as_str()),
-            PickError::Unavailable(n, s) => write!(f, "account {n} is {s}"),
+            PickError::Unavailable(n, s) => match *s {
+                "needs-login" => write!(f, "account {n} is logged out. sign in again from the clipx dashboard"),
+                "cooling" => write!(f, "account {n} hit its usage limit and is resting"),
+                s => write!(f, "account {n} is {s}"),
+            },
         }
     }
 }

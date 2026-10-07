@@ -230,6 +230,11 @@ try:
     check("model@label pin", s == 200 and up["headers"]["authorization"] == "Bearer claude-ok-refreshed" and json.loads(up["body"])["model"] == "claude-x")
     s, r = req("POST", "/a/claude-a/v1/messages", {"model": "claude-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K)
     check("pinned cooling account refuses", s == 429, (s, r))
+    off = next(a["label"] for a in req("GET", "/api/state", headers=A)[1]["accounts"] if a["status"] == "disabled")
+    s, h, body = req("POST", f"/a/{off}/v1/messages", {"model": "claude-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K, raw=True)
+    check("pinned disabled account is not a rate limit", s == 503 and b"rate_limit" not in body and "retry-after" not in h, (s, body))
+    s, recent = req("GET", "/api/requests", headers=A)
+    check("failed requests reach the request log", recent[0]["status"] == 503 and recent[0]["account"] == off and recent[1]["status"] == 429 and recent[1]["account"] == "claude-a", recent[:2])
 
     # Chat completions -> Claude
     s, r = req("POST", "/v1/chat/completions", {"model": "claude-x", "messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "hi"}]}, K)
@@ -393,6 +398,10 @@ try:
     check("gemini login completes", s == 200 and r["account"]["email"] == "new-gemini-login@x" and r["account"]["provider"] == "gemini", r)
     new_acc = json.load(open(os.path.join(HOME, "accounts", r["account"]["id"] + ".json")))
     check("gemini login ran code assist setup", new_acc["project_id"] == "proj-new-login" and new_acc["tier"] == "Free", new_acc)
+
+    s, r = req("POST", "/api/login/start", {"provider": "claude"}, A)
+    s, r = req("POST", "/api/login/complete", {"flow_id": r["flow_id"], "callback": "used-code"}, A)
+    check("rejected login code says what to do", s >= 400 and r["error"].startswith("That code didn't work"), (s, r))
 
     # Keys
     s, r = req("POST", "/api/keys", {"name": "second"}, A)

@@ -668,6 +668,27 @@ where
     let mut last_net: Option<String> = None;
     let mut refreshed: Vec<String> = Vec::new();
     let mut attempts = 0;
+    // The request log gets one row for a request that fails after rotation, under the
+    // last account it reached.
+    let mut last_label = pin.unwrap_or("-").to_string();
+    let fail = |r: Response, account: &str, error: String| {
+        ctx.app.stats.record(RequestLog {
+            ts: now(),
+            key: ctx.key.clone(),
+            provider: provider.as_str().to_string(),
+            account: account.to_string(),
+            model: model.to_string(),
+            path: ctx.path.clone(),
+            status: r.status().as_u16(),
+            ms: ctx.start.elapsed().as_millis() as u64,
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            error: Some(error),
+        });
+        r
+    };
+    let upstream_error = |s: StatusCode, b: &Bytes| format!("{s}: {}", error_text(b));
     while attempts < max {
         let acc = match app.pick(provider, pin, &tried) {
             Ok(a) => a,
@@ -677,26 +698,31 @@ where
                 // not a generic "exhausted" message; x-clipx-tried says how many
                 // accounts we rotated through before giving up.
                 if let Some((s, h, b)) = last {
-                    return Err(with_tried(upstream_error_response(s, &h, b), tried.len()));
+                    let msg = upstream_error(s, &b);
+                    return Err(fail(with_tried(upstream_error_response(s, &h, b), tried.len()), &last_label, msg));
                 }
                 if let Some(e) = last_net {
-                    return Err(error(style, StatusCode::BAD_GATEWAY, "api_error", &format!("upstream unreachable: {e}")));
+                    let msg = format!("upstream unreachable: {e}");
+                    return Err(fail(error(style, StatusCode::BAD_GATEWAY, "api_error", &msg), &last_label, msg));
                 }
                 let status = match e {
-                    PickError::Exhausted(_) | PickError::Unavailable(..) => StatusCode::TOO_MANY_REQUESTS,
-                    PickError::NoAccounts(_) => StatusCode::SERVICE_UNAVAILABLE,
+                    PickError::Exhausted(_) | PickError::Unavailable(_, "cooling") => StatusCode::TOO_MANY_REQUESTS,
+                    // A pinned account that is logged out or disabled won't come back by waiting.
+                    PickError::NoAccounts(_) | PickError::Unavailable(..) => StatusCode::SERVICE_UNAVAILABLE,
                     _ => StatusCode::BAD_REQUEST,
                 };
                 let mut r = error(style, status, if status == StatusCode::TOO_MANY_REQUESTS { "rate_limit_error" } else { "api_error" }, &e.to_string());
-                if let Some(at) = app.next_available(provider)
+                if status == StatusCode::TOO_MANY_REQUESTS
+                    && let Some(at) = app.next_available(provider)
                     && let Ok(v) = HeaderValue::from_str(&(at.saturating_sub(now())).max(1).to_string()) {
                         r.headers_mut().insert(header::RETRY_AFTER, v);
                     }
-                return Err(r);
+                return Err(fail(r, &last_label, e.to_string()));
             }
         };
         attempts += 1;
         let id = acc.id();
+        last_label = acc.label();
         if let Err(e) = oauth::ensure_fresh(app, &acc, 60).await
             && acc.state.lock().unwrap().needs_login {
                 tracing::warn!("{} needs login: {e}", acc.label());
@@ -732,7 +758,7 @@ where
         }
         let headers = resp.headers().clone();
         let body = resp.bytes().await.unwrap_or_default();
-        let snippet = String::from_utf8_lossy(&body[..body.len().min(300)]).to_string();
+        let snippet = error_text(&body);
         tracing::warn!("{} {model}: upstream {status}: {snippet}", file.label);
         match status.as_u16() {
             401 | 403 => {
@@ -766,8 +792,14 @@ where
         tried.push(id);
     }
     match last {
-        Some((s, h, b)) => Err(with_tried(upstream_error_response(s, &h, b), tried.len())),
-        None => Err(error(style, StatusCode::BAD_GATEWAY, "api_error", &format!("upstream unreachable: {}", last_net.unwrap_or_default()))),
+        Some((s, h, b)) => {
+            let msg = upstream_error(s, &b);
+            Err(fail(with_tried(upstream_error_response(s, &h, b), tried.len()), &last_label, msg))
+        }
+        None => {
+            let msg = format!("upstream unreachable: {}", last_net.unwrap_or_default());
+            Err(fail(error(style, StatusCode::BAD_GATEWAY, "api_error", &msg), &last_label, msg))
+        }
     }
 }
 
@@ -797,6 +829,20 @@ fn copy_response_headers(src: &HeaderMap, dst: &mut HeaderMap) {
         }
         dst.append(k.clone(), v.clone());
     }
+}
+
+/// The readable part of an upstream error body: the message field of Anthropic, OpenAI,
+/// Gemini and Codex errors, or the start of the body when it isn't one of those.
+fn error_text(body: &[u8]) -> String {
+    if let Ok(v) = serde_json::from_slice::<Value>(body) {
+        let v = if v.is_array() { &v[0] } else { &v };
+        for p in ["/error/message", "/detail", "/message", "/error"] {
+            if let Some(m) = v.pointer(p).and_then(Value::as_str).filter(|m| !m.is_empty()) {
+                return m.chars().take(300).collect();
+            }
+        }
+    }
+    String::from_utf8_lossy(&body[..body.len().min(300)]).trim().to_string()
 }
 
 fn upstream_error_response(status: StatusCode, headers: &HeaderMap, body: Bytes) -> Response {
@@ -1194,6 +1240,15 @@ mod tests {
         assert_eq!(provider_for_model("o3"), Some(Provider::Codex));
         assert_eq!(provider_for_model("gemini-2.5-pro"), Some(Provider::Gemini));
         assert_eq!(provider_for_model("llama"), None);
+    }
+
+    #[test]
+    fn error_text_reads_each_providers_message() {
+        assert_eq!(error_text(br#"{"type":"error","error":{"type":"authentication_error","message":"invalid token"}}"#), "invalid token");
+        assert_eq!(error_text(br#"{"detail":"System messages are not allowed"}"#), "System messages are not allowed");
+        assert_eq!(error_text(br#"[{"error":{"code":429,"message":"Resource exhausted"}}]"#), "Resource exhausted");
+        assert_eq!(error_text(br#"{"error":"bad"}"#), "bad");
+        assert_eq!(error_text(b"<html>502 Bad Gateway</html>\n"), "<html>502 Bad Gateway</html>");
     }
 
     #[test]

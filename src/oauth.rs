@@ -97,14 +97,14 @@ pub fn start(app: &Arc<App>, provider: Provider) -> StartedFlow {
     flows.insert(id.clone(), PendingFlow { provider, verifier, state: state.clone(), created: now() });
     drop(flows);
     let hint = match provider {
-        Provider::Claude => "sign in, then paste the code shown on the page",
+        Provider::Claude => "Sign in, then paste the code the page shows.",
         Provider::Codex => {
             spawn_codex_callback_listener(app.clone(), id.clone());
-            "sign in. if this box is not the machine with the browser, the final page fails to load: copy its full url (localhost:1455/auth/callback?code=…) and paste it here"
+            "Sign in. If clipx runs on another machine, the last page won't load. Copy its full address (localhost:1455/auth/callback?code=…) and paste it here."
         }
         Provider::Gemini => {
             spawn_gemini_callback_listener(app.clone(), id.clone());
-            "sign in with your Google account. if this box is not the machine with the browser, the final page fails to load: copy its full url (127.0.0.1:1456/oauth2callback?code=…) and paste it here"
+            "Sign in with your Google account. If clipx runs on another machine, the last page won't load. Copy its full address (127.0.0.1:1456/oauth2callback?code=…) and paste it here."
         }
     };
     StartedFlow { id, url, hint }
@@ -182,6 +182,16 @@ async fn read_json(resp: reqwest::Response, what: &str) -> Result<Value, (u16, S
     serde_json::from_slice(&body).map_err(|e| (status, format!("{what}: bad json: {e}")))
 }
 
+/// A rejected code is the common case: it was used already, expired, or came from an
+/// older sign-in page. Say what to do instead of showing the provider's error JSON.
+fn exchange_error((status, msg): (u16, String)) -> String {
+    if (400..500).contains(&status) {
+        "That code didn't work. Codes work once and expire after a few minutes. Open the sign-in page again and use the new one.".into()
+    } else {
+        msg
+    }
+}
+
 async fn exchange_claude(app: &App, flow: &PendingFlow, code: &str) -> Result<AccountFile, String> {
     let url = app.cfg.read().unwrap().upstream.claude_token_url.clone();
     let body = json!({
@@ -193,7 +203,7 @@ async fn exchange_claude(app: &App, flow: &PendingFlow, code: &str) -> Result<Ac
         "state": flow.state,
     });
     let resp = claude_headers(app.http.post(url)).body(body.to_string()).send().await.map_err(|e| e.to_string())?;
-    let v = read_json(resp, "claude token exchange").await.map_err(|e| e.1)?;
+    let v = read_json(resp, "claude token exchange").await.map_err(exchange_error)?;
     let mut file = new_account(Provider::Claude, v["access_token"].as_str().ok_or("no access_token in response")?.to_string());
     file.refresh_token = v["refresh_token"].as_str().map(String::from);
     file.expires_at = now() + v["expires_in"].as_u64().unwrap_or(28800);
@@ -249,7 +259,7 @@ async fn exchange_codex(app: &App, flow: &PendingFlow, code: &str) -> Result<Acc
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    let v = read_json(resp, "codex token exchange").await.map_err(|e| e.1)?;
+    let v = read_json(resp, "codex token exchange").await.map_err(exchange_error)?;
     let access = v["access_token"].as_str().ok_or("no access_token in response")?.to_string();
     let mut file = new_account(Provider::Codex, access.clone());
     file.refresh_token = v["refresh_token"].as_str().map(String::from);
@@ -280,7 +290,7 @@ async fn exchange_gemini(app: &App, code: &str) -> Result<AccountFile, String> {
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    let v = read_json(resp, "gemini token exchange").await.map_err(|e| e.1)?;
+    let v = read_json(resp, "gemini token exchange").await.map_err(exchange_error)?;
     let access = v["access_token"].as_str().ok_or("no access_token in response")?.to_string();
     let mut file = new_account(Provider::Gemini, access.clone());
     file.refresh_token = v["refresh_token"].as_str().map(String::from);
