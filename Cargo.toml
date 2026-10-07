@@ -1,0 +1,32 @@
+[package]
+name = "clipx"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "http2", "tokio", "ws", "json", "query"] }
+base64 = "0.23.1"
+bytes = "1.12.1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+futures-util = "0.3.34"
+getrandom = "0.4.3"
+hex = "0.4.3"
+http-body-util = "0.1.5"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "stream", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+sha2 = "0.11.0"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "fs", "time", "signal", "sync", "process", "io-util"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+toml = "1.1.6"
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+url = "2.5.8"
+xxhash-rust = { version = "0.8.19", features = ["xxh64"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
