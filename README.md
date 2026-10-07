@@ -58,12 +58,24 @@ OpenAI-compatible apps: base URL `https://your-box-url/v1`, API key `sk-clipx-â€
 
 | path | for | upstream |
 |---|---|---|
-| `POST /v1/messages`, `/v1/messages/count_tokens` | Claude Code, Anthropic SDKs | Claude |
+| `POST /v1/messages`, `/v1/messages/count_tokens` | Claude Code, Anthropic SDKs | Claude, or ChatGPT by model |
 | `POST /v1/responses` | Codex, OpenAI Responses SDKs | ChatGPT Codex backend |
 | `POST /v1/chat/completions` | OpenAI-compatible apps | Claude or ChatGPT, by model |
 | `GET /v1/models` | everything | live model lists from both |
 
 Clients authenticate with a clipx key in `Authorization: Bearer`, `x-api-key`, or `api-key`.
+
+### Claude Code with GPT models
+
+Point `ANTHROPIC_MODEL` at a GPT model and Claude Code talks to your ChatGPT account instead, tool use, streaming, thinking and all:
+
+```sh
+export ANTHROPIC_BASE_URL=https://your-box-url
+export ANTHROPIC_AUTH_TOKEN=sk-clipx-â€¦
+export ANTHROPIC_MODEL=gpt-5.6-sol
+```
+
+clipx translates the request to Codex's Responses format and translates the answer back, so Claude Code never knows the difference. `/v1/messages/count_tokens` for a GPT model is a local byte estimate; it does not call ChatGPT.
 
 ## Accounts and routing
 
@@ -165,7 +177,6 @@ Static Linux builds: `CC_x86_64_unknown_linux_musl=musl-gcc cargo build --releas
 
 ## Not yet
 
-- Claude Code with GPT models (Messages to Responses translation)
 - Gemini accounts
 
 Using subscription logins outside the official apps may break the providers' terms. Check them for your plan.
