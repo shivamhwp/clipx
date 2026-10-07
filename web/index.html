@@ -372,13 +372,13 @@ function accounts(){
   const card=a=>{
     const [st,tone]=STATUS[a.status]||[a.status,''];
     const stTxt=a.status==='cooling'?st+' · '+dur(a.cooldown_until-S.now):st;
-    const who=[a.email,a.org&&a.org!==a.email?a.org:'',a.linked?'linked to '+a.linked.split('/').pop():''].filter(Boolean).map(esc).join(' · ');
-    const tok=a.linked?`token from ${esc(a.linked)}`:a.expires_at?(a.expires_at>S.now?'token expires in '+dur(a.expires_at-S.now):'token expired'):'token expiry unknown';
+    const who=[a.email,a.org&&a.org!==a.email?a.org:'',a.linked?'linked to '+a.linked:''].filter(Boolean).map(esc).join(' · ');
+    const tok=a.linked?'token follows the linked file':a.expires_at?(a.expires_at>S.now?'token expires in '+dur(a.expires_at-S.now):'token expired'):'token expiry unknown';
     return `<div class="acct"><div class="acct-h"><span class="pico">${prov(a.provider).icon}</span>
       <div class="acct-n"><div class="row-t">${esc(a.label)}${badge(stTxt,tone)}${a.plan?badge(a.plan,'info'):''}</div><div class="row-d" title="${who}">${who||'&nbsp;'}</div></div>
       ${sw(!a.disabled,`patchAcc(${js(a.id)},{disabled:${!a.disabled}})`,a.disabled?'Turn on':'Turn off')}</div>
       <div class="acct-b">${quota(a)}${a.last_error?`<div class="err">${esc(a.last_error)}</div>`:''}
-      <div class="acct-f"><span class="meta">${num(a.requests)} requests · ${num(a.input_tokens)} in · ${num(a.output_tokens)} out · ${tok} · used ${ago(a.last_used)}</span>
+      <div class="acct-f"><span class="meta">${num(a.requests)} request${a.requests===1?'':'s'} · ${num(a.input_tokens)} in · ${num(a.output_tokens)} out · ${tok} · used ${ago(a.last_used)}</span>
         ${a.status==='needs-login'?btn('Log in again',`startLogin(${js(a.provider)})`,'pri xs'):''}
         ${a.status==='cooling'||a.status==='needs-login'||a.last_error?btn('Clear error',`patchAcc(${js(a.id)},{reset:true})`,'ghost xs'):''}
         <span class="prio" title="Higher priority accounts are used first">Priority<button class="btn ghost icon xs" onclick="patchAcc(${js(a.id)},{priority:${a.priority-1}})">${ic('down')}</button><b>${a.priority}</b><button class="btn ghost icon xs" onclick="patchAcc(${js(a.id)},{priority:${a.priority+1}})">${ic('up')}</button></span>
