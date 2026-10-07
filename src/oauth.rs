@@ -18,6 +18,15 @@ pub const CODEX_AUTHORIZE: &str = "https://auth.openai.com/oauth/authorize";
 pub const CODEX_REDIRECT: &str = "http://localhost:1455/auth/callback";
 pub const CODEX_CALLBACK_PORT: u16 = 1455;
 
+/// Same client the official Gemini CLI uses for "Gemini Code Assist" logins. It is a public
+/// installed-app client: Google's docs say the secret is not actually secret for this app type.
+pub const GEMINI_CLIENT_ID: &str = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+pub const GEMINI_CLIENT_SECRET: &str = "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";
+pub const GEMINI_AUTHORIZE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+pub const GEMINI_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile";
+pub const GEMINI_CALLBACK_PORT: u16 = 1456;
+pub const GEMINI_REDIRECT: &str = "http://127.0.0.1:1456/oauth2callback";
+
 const FLOW_TTL: u64 = 15 * 60;
 
 #[derive(Clone, Debug)]
@@ -67,6 +76,19 @@ pub fn start(app: &Arc<App>, provider: Provider) -> StartedFlow {
                 ("codex_cli_simplified_flow", "true"),
             ],
         ),
+        Provider::Gemini => (
+            GEMINI_AUTHORIZE,
+            vec![
+                ("client_id", GEMINI_CLIENT_ID),
+                ("response_type", "code"),
+                ("redirect_uri", GEMINI_REDIRECT),
+                ("scope", GEMINI_SCOPE),
+                ("access_type", "offline"),
+                // Forces Google to hand back a refresh_token even on a repeat login.
+                ("prompt", "consent"),
+                ("state", &state),
+            ],
+        ),
     };
     let url = url::Url::parse_with_params(base, &params).expect("static url").to_string();
     let id = random_hex(8);
@@ -79,6 +101,10 @@ pub fn start(app: &Arc<App>, provider: Provider) -> StartedFlow {
         Provider::Codex => {
             spawn_codex_callback_listener(app.clone(), id.clone());
             "sign in. if this box is not the machine with the browser, the final page fails to load: copy its full url (localhost:1455/auth/callback?code=…) and paste it here"
+        }
+        Provider::Gemini => {
+            spawn_gemini_callback_listener(app.clone(), id.clone());
+            "sign in with your Google account. if this box is not the machine with the browser, the final page fails to load: copy its full url (127.0.0.1:1456/oauth2callback?code=…) and paste it here"
         }
     };
     StartedFlow { id, url, hint }
@@ -128,6 +154,7 @@ pub async fn complete(app: &Arc<App>, flow_id: &str, callback: &str) -> Result<A
     let file = match flow.provider {
         Provider::Claude => exchange_claude(app, &flow, &code).await?,
         Provider::Codex => exchange_codex(app, &flow, &code).await?,
+        Provider::Gemini => exchange_gemini(app, &code).await?,
     };
     app.flows.lock().unwrap().remove(flow_id);
     let acc = app.store.upsert(file).map_err(|e| e.to_string())?;
@@ -233,6 +260,85 @@ async fn exchange_codex(app: &App, flow: &PendingFlow, code: &str) -> Result<Acc
     Ok(file)
 }
 
+/// Exchange a Google authorization code for tokens, then run the same project/tier setup the
+/// Gemini CLI does on first login (loadCodeAssist, and onboardUser when needed).
+async fn exchange_gemini(app: &App, code: &str) -> Result<AccountFile, String> {
+    let upstream = app.cfg.read().unwrap().upstream.clone();
+    let body = form(&[
+        ("client_id", GEMINI_CLIENT_ID),
+        ("client_secret", GEMINI_CLIENT_SECRET),
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("redirect_uri", GEMINI_REDIRECT),
+    ]);
+    let resp = app
+        .http
+        .post(&upstream.gemini_token_url)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("accept", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let v = read_json(resp, "gemini token exchange").await.map_err(|e| e.1)?;
+    let access = v["access_token"].as_str().ok_or("no access_token in response")?.to_string();
+    let mut file = new_account(Provider::Gemini, access.clone());
+    file.refresh_token = v["refresh_token"].as_str().map(String::from);
+    file.expires_at = now() + v["expires_in"].as_u64().unwrap_or(3600);
+
+    let userinfo = app.http.get(&upstream.gemini_userinfo_url).bearer_auth(&access).send().await.map_err(|e| format!("gemini userinfo: {e}"))?;
+    let u = read_json(userinfo, "gemini userinfo").await.map_err(|e| e.1)?;
+    file.email = u["email"].as_str().map(String::from);
+
+    let (project, tier) = gemini_code_assist_setup(app, &access).await?;
+    file.project_id = Some(project);
+    file.tier = tier;
+    file.label = default_label(Provider::Gemini, file.email.as_deref());
+    Ok(file)
+}
+
+async fn ca_call(app: &App, base: &str, token: &str, method: &str, body: Value) -> Result<Value, String> {
+    let resp = app
+        .http
+        .post(format!("{base}/v1internal:{method}"))
+        .bearer_auth(token)
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    read_json(resp, &format!("gemini {method}")).await.map_err(|e| e.1)
+}
+
+/// Mirrors the Gemini CLI's `setupUser`: loadCodeAssist tells us the project (and tier) a user
+/// already has; a user with none gets onboarded into the default tier (the free tier uses a
+/// Google-managed project, so we send no project id for it).
+async fn gemini_code_assist_setup(app: &App, access_token: &str) -> Result<(String, Option<String>), String> {
+    let base = app.cfg.read().unwrap().upstream.gemini_api.clone();
+    let metadata = json!({"ideType": "IDE_UNSPECIFIED", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"});
+    let load = ca_call(app, &base, access_token, "loadCodeAssist", json!({"metadata": metadata})).await?;
+    if let Some(project) = load["cloudaicompanionProject"].as_str().filter(|s| !s.is_empty()) {
+        let tier = load["currentTier"]["name"].as_str().or_else(|| load["currentTier"]["id"].as_str()).map(String::from);
+        return Ok((project.to_string(), tier));
+    }
+    let default_tier = load["allowedTiers"].as_array().into_iter().flatten().find(|t| t["isDefault"] == true).cloned();
+    let tier_id = default_tier.as_ref().and_then(|t| t["id"].as_str()).unwrap_or("legacy-tier").to_string();
+    let tier_name = default_tier.as_ref().and_then(|t| t["name"].as_str()).map(String::from);
+    let onboard_body = json!({"tierId": tier_id, "metadata": metadata});
+    let mut lro = ca_call(app, &base, access_token, "onboardUser", onboard_body).await?;
+    for _ in 0..30 {
+        if lro["done"] == true {
+            break;
+        }
+        let name = lro["name"].as_str().ok_or("onboarding did not return an operation name")?.to_string();
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let resp = app.http.get(format!("{base}/v1internal/{name}")).bearer_auth(access_token).send().await.map_err(|e| e.to_string())?;
+        lro = read_json(resp, "gemini onboarding operation").await.map_err(|e| e.1)?;
+    }
+    let project = lro["response"]["cloudaicompanionProject"]["id"].as_str().ok_or("onboarding did not return a project id")?.to_string();
+    Ok((project, tier_name))
+}
+
 /// Refresh if the token expires within `margin` seconds. Single-flight per account.
 pub async fn ensure_fresh(app: &App, acc: &Account, margin: u64) -> Result<(), String> {
     let needs = |acc: &Account| {
@@ -289,6 +395,26 @@ pub async fn refresh(app: &App, acc: &Account) -> Result<(), String> {
                 .await
             {
                 Ok(r) => read_json(r, "codex refresh").await,
+                Err(e) => Err((0, e.to_string())),
+            }
+        }
+        Provider::Gemini => {
+            let body = form(&[
+                ("client_id", GEMINI_CLIENT_ID),
+                ("client_secret", GEMINI_CLIENT_SECRET),
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh_token),
+            ]);
+            match app
+                .http
+                .post(&upstream.gemini_token_url)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("accept", "application/json")
+                .body(body)
+                .send()
+                .await
+            {
+                Ok(r) => read_json(r, "gemini refresh").await,
                 Err(e) => Err((0, e.to_string())),
             }
         }
@@ -377,6 +503,46 @@ fn spawn_codex_callback_listener(app: Arc<App>, flow_id: String) {
                 continue;
             }
             let result = complete(&app, &flow_id, &format!("http://localhost{path}")).await;
+            let msg = match &result {
+                Ok(acc) => format!("logged in as {}. you can close this tab.", acc.label()),
+                Err(e) => format!("login failed: {e}"),
+            };
+            let page = format!("<!doctype html><meta charset=utf-8><title>clipx</title><body style=\"font:16px monospace;padding:40px\">{}</body>", html_escape(&msg));
+            let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{page}", page.len());
+            let _ = sock.write_all(resp.as_bytes()).await;
+            if result.is_ok() {
+                return;
+            }
+        }
+    });
+}
+
+/// Same trick as the Codex listener, for Google's loopback redirect.
+fn spawn_gemini_callback_listener(app: Arc<App>, flow_id: String) {
+    tokio::spawn(async move {
+        let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", GEMINI_CALLBACK_PORT)).await else {
+            return;
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(FLOW_TTL);
+        loop {
+            if flow_done(&app, &flow_id) {
+                return;
+            }
+            let accepted = tokio::time::timeout_at(deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(5)), listener.accept()).await;
+            if tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            let Ok(Ok((mut sock, _))) = accepted else { continue };
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+            if !path.starts_with("/oauth2callback") {
+                let _ = sock.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
+                continue;
+            }
+            let result = complete(&app, &flow_id, &format!("http://127.0.0.1{path}")).await;
             let msg = match &result {
                 Ok(acc) => format!("logged in as {}. you can close this tab.", acc.label()),
                 Err(e) => format!("login failed: {e}"),

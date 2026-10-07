@@ -1,4 +1,4 @@
-"""Fake Anthropic + ChatGPT Codex + OAuth endpoints for clipx end-to-end tests.
+"""Fake Anthropic + ChatGPT Codex + Gemini Code Assist + OAuth endpoints for clipx end-to-end tests.
 
 Token behaviour (Bearer value):
   claude-ok*          normal responses
@@ -7,6 +7,10 @@ Token behaviour (Bearer value):
   claude-old          401 until refreshed (refresh gives claude-ok-refreshed)
   codex-ok*           normal responses
   codex-expired       401 (clipx should refresh first because expires_at is past)
+  gemini-ok*          normal responses
+  gemini-limited      429 RESOURCE_EXHAUSTED with a google.rpc.RetryInfo (retryDelay: 37s)
+  gemini-dead         401
+  gemini-old          401 until refreshed (refresh gives gemini-ok-refreshed)
 Every request is appended to LOG and readable at GET /_log, cleared by POST /_reset.
 """
 
@@ -23,6 +27,11 @@ LOCK = threading.Lock()
 
 def sse(event, data):
     return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+
+
+def gsse(data):
+    # Code Assist (and the public Gemini API) send plain "data:" lines, no event name.
+    return f"data: {json.dumps(data)}\n\n".encode()
 
 
 class H(BaseHTTPRequestHandler):
@@ -61,6 +70,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"data": [{"id": "claude-test-1", "type": "model"}, {"id": "claude-test-2", "type": "model"}]})
         if self.path.startswith("/codex/models"):
             return self.send(200, {"models": [{"slug": "gpt-test-codex"}]})
+        if self.path.startswith("/oauth2/v2/userinfo"):
+            return self.send(200, {"email": "new-gemini-login@x"})
         self.send(404, {"error": "nope"})
 
     def do_POST(self):
@@ -80,6 +91,21 @@ class H(BaseHTTPRequestHandler):
             if form.get("refresh_token") == "codex-rt-good":
                 return self.send(200, {"access_token": "codex-ok-refreshed", "refresh_token": "codex-rt-good-2", "expires_in": 3600})
             return self.send(400, {"error": "invalid_grant"})
+        if self.path == "/oauth/gemini":
+            form = dict(urllib.parse.parse_qsl(raw.decode()))
+            if form.get("grant_type") == "authorization_code" and form.get("code") == "gemini-code-good":
+                return self.send(200, {"access_token": "gemini-ok-new", "refresh_token": "gemini-rt-new", "expires_in": 3600})
+            if form.get("refresh_token") == "gemini-rt-good":
+                return self.send(200, {"access_token": "gemini-ok-refreshed", "refresh_token": "gemini-rt-good-2", "expires_in": 3600})
+            return self.send(400, {"error": "invalid_grant"})
+        if self.path.startswith("/v1internal:loadCodeAssist"):
+            return self.send(200, {"allowedTiers": [{"id": "free-tier", "name": "Free", "isDefault": True}]})
+        if self.path.startswith("/v1internal:onboardUser"):
+            return self.send(200, {"done": True, "response": {"cloudaicompanionProject": {"id": "proj-new-login"}}})
+        if self.path.startswith("/v1internal:countTokens"):
+            return self.send(200, {"totalTokens": 9})
+        if self.path.startswith("/v1internal:generateContent") or self.path.startswith("/v1internal:streamGenerateContent"):
+            return self.gemini(raw)
         if self.path.startswith("/v1/messages"):
             return self.claude(raw)
         if self.path.startswith("/codex/responses"):
@@ -159,6 +185,28 @@ class H(BaseHTTPRequestHandler):
             out = []
         w.write(sse("response.completed", {"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "output": out, "usage": {"input_tokens": 20, "output_tokens": 4, "input_tokens_details": {"cached_tokens": 8}}}}))
         w.flush()
+
+    def gemini(self, raw):
+        tok = self.token()
+        if tok == "gemini-limited":
+            return self.send(429, {"error": {"code": 429, "message": "limited", "status": "RESOURCE_EXHAUSTED", "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "37s"}]}})
+        if tok in ("gemini-dead", "gemini-old"):
+            return self.send(401, {"error": {"code": 401, "message": "invalid token", "status": "UNAUTHENTICATED"}})
+        if not tok.startswith("gemini-ok"):
+            return self.send(401, {"error": {"code": 401, "message": "unknown token " + tok, "status": "UNAUTHENTICATED"}})
+        text = f"hello from {tok}"
+        usage = {"promptTokenCount": 15, "candidatesTokenCount": 6, "cachedContentTokenCount": 2, "thoughtsTokenCount": 1}
+        if "streamGenerateContent" in self.path:
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.end_headers()
+            w = self.wfile
+            w.write(gsse({"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": text[:5]}]}}]}}))
+            w.flush()
+            w.write(gsse({"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": text[5:]}]}, "finishReason": "STOP"}], "usageMetadata": usage}}))
+            w.flush()
+            return
+        return self.send(200, {"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": text}]}, "finishReason": "STOP"}], "usageMetadata": usage}})
 
 
 if __name__ == "__main__":

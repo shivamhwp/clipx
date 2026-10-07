@@ -2,6 +2,7 @@
 
 use crate::app::{App, PickError, cooldown_secs, quota_from_headers};
 use crate::cloak;
+use crate::gemini;
 use crate::oauth;
 use crate::sse;
 use crate::store::{Account, AccountFile, Provider};
@@ -27,12 +28,14 @@ pub const CODEX_VERSION: &str = "0.160.1";
 enum Style {
     Anthropic,
     OpenAI,
+    Gemini,
 }
 
 fn error(style: Style, status: StatusCode, kind: &str, msg: &str) -> Response {
     let body = match style {
         Style::Anthropic => json!({"type": "error", "error": {"type": kind, "message": msg}}),
         Style::OpenAI => json!({"error": {"message": msg, "type": kind, "code": status.as_u16()}}),
+        Style::Gemini => json!({"error": {"code": status.as_u16(), "message": msg, "status": kind}}),
     };
     (status, [(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
 }
@@ -45,12 +48,19 @@ fn presented_key(h: &HeaderMap) -> Option<&str> {
     ["x-api-key", "api-key", "x-goog-api-key"].iter().find_map(|k| h.get(*k).and_then(|v| v.to_str().ok()).map(str::trim))
 }
 
+/// Gemini-compatible clients may pass the key as `?key=` instead of a header.
+fn key_from_query(query: &str) -> Option<String> {
+    url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == "key").map(|(_, v)| v.into_owned())
+}
+
 pub fn provider_for_model(model: &str) -> Option<Provider> {
     let m = model.to_ascii_lowercase();
     if m.starts_with("claude") || ["opus", "sonnet", "haiku", "fable"].iter().any(|k| m.contains(k)) {
         Some(Provider::Claude)
     } else if m.starts_with("gpt") || m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") || m.contains("codex") {
         Some(Provider::Codex)
+    } else if m.starts_with("gemini") {
+        Some(Provider::Gemini)
     } else {
         None
     }
@@ -85,9 +95,17 @@ pub async fn entry(State(app): State<Arc<App>>, req: Request) -> Response {
         path = format!("/{tail}");
     }
     let trimmed = path.trim_end_matches('/');
-    let style = if trimmed.contains("/messages") { Style::Anthropic } else { Style::OpenAI };
-    let Some(key) = presented_key(&parts.headers).and_then(|k| app.store.check_key(k)) else {
-        return error(style, StatusCode::UNAUTHORIZED, "authentication_error", "missing or invalid clipx api key");
+    let style = if trimmed.contains("/messages") {
+        Style::Anthropic
+    } else if trimmed.starts_with("/v1beta/") {
+        Style::Gemini
+    } else {
+        Style::OpenAI
+    };
+    let presented = presented_key(&parts.headers).map(str::to_string).or_else(|| parts.uri.query().and_then(key_from_query));
+    let Some(key) = presented.and_then(|k| app.store.check_key(&k)) else {
+        let kind = if style == Style::Gemini { "UNAUTHENTICATED" } else { "authentication_error" };
+        return error(style, StatusCode::UNAUTHORIZED, kind, "missing or invalid clipx api key");
     };
     if trimmed == "/v1/models" || trimmed == "/models" {
         return models(&app, pin.as_deref()).await;
@@ -111,6 +129,7 @@ pub async fn entry(State(app): State<Arc<App>>, req: Request) -> Response {
             let rest = p.split_once("/responses").map(|(_, r)| r.to_string()).unwrap_or_default();
             responses(ctx, body, &rest).await
         }
+        p if p.starts_with("/v1beta/models/") => gemini_native(ctx, body, p.trim_start_matches("/v1beta/")).await,
         _ => error(style, StatusCode::NOT_FOUND, "not_found_error", &format!("clipx does not serve {trimmed}")),
     }
 }
@@ -454,6 +473,117 @@ async fn chat(ctx: Ctx, body: Bytes) -> Response {
                 Err(e) => error(Style::OpenAI, StatusCode::BAD_GATEWAY, "upstream_error", &e),
             }
         }
+        Provider::Gemini => {
+            let inner = gemini::chat_to_gemini(&req);
+            let user_prompt_id = crate::util::uuid_v4();
+            let method = if stream { "streamGenerateContent" } else { "generateContent" };
+            let url = format!("{}/v1internal:{method}{}", app.cfg.read().unwrap().upstream.gemini_api, if stream { "?alt=sse" } else { "" });
+            let sent = send(&ctx, provider, pin.as_deref(), Style::OpenAI, &model, |f| {
+                let payload = gemini::wrap_envelope(&model, f.project_id.as_deref(), &user_prompt_id, inner.clone());
+                app.http.post(&url).bearer_auth(&f.access_token).header(header::CONTENT_TYPE, "application/json").body(payload.to_string())
+            })
+            .await;
+            let (acc, resp) = match sent {
+                Ok(x) => x,
+                Err(r) => return r,
+            };
+            let rec = Recorder::new(&ctx, provider, acc, &model);
+            if stream {
+                return gemini::chat_stream_response(rec, resp, &model, include_usage);
+            }
+            match resp.bytes().await {
+                Ok(b) => {
+                    let v: Value = serde_json::from_slice(&b).unwrap_or_default();
+                    let inner = gemini::unwrap_envelope(&v);
+                    let mut t = Tokens::default();
+                    gemini::absorb_usage(&mut t, &inner["usageMetadata"]);
+                    rec.finish(t, None);
+                    json_response(StatusCode::OK, &gemini::gemini_to_chat(&inner, &model))
+                }
+                Err(e) => {
+                    rec.finish(Tokens::default(), Some(e.to_string()));
+                    error(Style::OpenAI, StatusCode::BAD_GATEWAY, "upstream_error", &e.to_string())
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ native gemini
+
+/// `rest` is e.g. "models/gemini-2.5-pro:generateContent", matching the public Gemini API shape.
+async fn gemini_native(ctx: Ctx, body: Bytes, rest: &str) -> Response {
+    let Some(model) = rest.strip_prefix("models/") else {
+        return error(Style::Gemini, StatusCode::NOT_FOUND, "NOT_FOUND", "expected models/{model}:{method}");
+    };
+    let Some((model, method)) = model.rsplit_once(':') else {
+        return error(Style::Gemini, StatusCode::NOT_FOUND, "NOT_FOUND", "expected models/{model}:{method}");
+    };
+    let Ok(native_body) = serde_json::from_slice::<Value>(&body) else {
+        return error(Style::Gemini, StatusCode::BAD_REQUEST, "INVALID_ARGUMENT", "body is not valid JSON");
+    };
+    let (model, model_pin) = split_pin(&ctx.app, model);
+    let pin = ctx.pin.clone().or(model_pin);
+    let app = ctx.app.clone();
+    match method {
+        "countTokens" => {
+            let payload = gemini::count_tokens_envelope(&model, &native_body);
+            let url = format!("{}/v1internal:countTokens", app.cfg.read().unwrap().upstream.gemini_api);
+            let sent = send(&ctx, Provider::Gemini, pin.as_deref(), Style::Gemini, &model, |f| {
+                app.http.post(&url).bearer_auth(&f.access_token).header(header::CONTENT_TYPE, "application/json").body(payload.to_string())
+            })
+            .await;
+            let (acc, resp) = match sent {
+                Ok(x) => x,
+                Err(r) => return r,
+            };
+            let rec = Recorder::new(&ctx, Provider::Gemini, acc, &model);
+            match resp.bytes().await {
+                Ok(b) => {
+                    let v: Value = serde_json::from_slice(&b).unwrap_or_default();
+                    rec.finish(Tokens::default(), None);
+                    json_response(StatusCode::OK, &gemini::count_tokens_response(&v))
+                }
+                Err(e) => {
+                    rec.finish(Tokens::default(), Some(e.to_string()));
+                    error(Style::Gemini, StatusCode::BAD_GATEWAY, "INTERNAL", &e.to_string())
+                }
+            }
+        }
+        "generateContent" | "streamGenerateContent" => {
+            let stream = method == "streamGenerateContent";
+            let user_prompt_id = crate::util::uuid_v4();
+            let url = format!("{}/v1internal:{method}{}", app.cfg.read().unwrap().upstream.gemini_api, if stream { "?alt=sse" } else { "" });
+            let sent = send(&ctx, Provider::Gemini, pin.as_deref(), Style::Gemini, &model, |f| {
+                let payload = gemini::wrap_envelope(&model, f.project_id.as_deref(), &user_prompt_id, native_body.clone());
+                app.http.post(&url).bearer_auth(&f.access_token).header(header::CONTENT_TYPE, "application/json").body(payload.to_string())
+            })
+            .await;
+            let (acc, resp) = match sent {
+                Ok(x) => x,
+                Err(r) => return r,
+            };
+            let rec = Recorder::new(&ctx, Provider::Gemini, acc, &model);
+            if stream {
+                gemini::native_stream_response(rec, resp)
+            } else {
+                match resp.bytes().await {
+                    Ok(b) => {
+                        let v: Value = serde_json::from_slice(&b).unwrap_or_default();
+                        let inner = gemini::unwrap_envelope(&v);
+                        let mut t = Tokens::default();
+                        gemini::absorb_usage(&mut t, &inner["usageMetadata"]);
+                        rec.finish(t, None);
+                        json_response(StatusCode::OK, &inner)
+                    }
+                    Err(e) => {
+                        rec.finish(Tokens::default(), Some(e.to_string()));
+                        error(Style::Gemini, StatusCode::BAD_GATEWAY, "INTERNAL", &e.to_string())
+                    }
+                }
+            }
+        }
+        _ => error(Style::Gemini, StatusCode::NOT_FOUND, "NOT_FOUND", &format!("unknown method {method}")),
     }
 }
 
@@ -604,7 +734,7 @@ fn json_response(status: StatusCode, v: &Value) -> Response {
 
 // ------------------------------------------------------------------ recording + streaming
 
-struct Recorder {
+pub(crate) struct Recorder {
     app: Arc<App>,
     acc: Arc<Account>,
     key: String,
@@ -620,7 +750,7 @@ impl Recorder {
         Self { app: ctx.app.clone(), acc, key: ctx.key.clone(), provider, model: model.to_string(), path: ctx.path.clone(), start: ctx.start, status: 200 }
     }
 
-    fn finish(&self, t: Tokens, error: Option<String>) {
+    pub(crate) fn finish(&self, t: Tokens, error: Option<String>) {
         {
             let mut s = self.acc.state.lock().unwrap();
             s.requests += 1;
@@ -889,16 +1019,28 @@ fn translated(rec: Recorder, resp: reqwest::Response, t: Translator) -> Response
 
 const CLAUDE_MODELS: &[&str] = &["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"];
 const CODEX_MODELS: &[&str] = &["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.5"];
+/// From the Gemini CLI source (packages/core/src/config/models.ts): DEFAULT_GEMINI_MODEL,
+/// BASE_GEMINI_FLASH_MODEL, LATEST_GEMINI_FLASH_MODEL, BASE_GEMINI_FLASH_LITE_MODEL.
+const GEMINI_MODELS: &[&str] = &["gemini-2.5-pro", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.1-flash-lite"];
 
 async fn upstream_models(app: &Arc<App>, provider: Provider) -> Vec<String> {
     if let Some((at, list)) = app.models_cache.lock().unwrap().get(&provider)
         && now() - at < 3600 && !list.is_empty() {
             return list.clone();
         }
-    let fallback = || match provider {
-        Provider::Claude => CLAUDE_MODELS.iter().map(|s| s.to_string()).collect(),
-        Provider::Codex => CODEX_MODELS.iter().map(|s| s.to_string()).collect(),
+    let fallback = || -> Vec<String> {
+        match provider {
+            Provider::Claude => CLAUDE_MODELS.iter().map(|s| s.to_string()).collect(),
+            Provider::Codex => CODEX_MODELS.iter().map(|s| s.to_string()).collect(),
+            Provider::Gemini => GEMINI_MODELS.iter().map(|s| s.to_string()).collect(),
+        }
     };
+    // Code Assist has no models-listing method, so Gemini always uses the fallback list.
+    if provider == Provider::Gemini {
+        let list = fallback();
+        app.models_cache.lock().unwrap().insert(provider, (now(), list.clone()));
+        return list;
+    }
     let Ok(acc) = app.pick(provider, None, &[]) else { return fallback() };
     let _ = oauth::ensure_fresh(app, &acc, 60).await;
     let f = acc.file.read().unwrap().clone();
@@ -909,6 +1051,7 @@ async fn upstream_models(app: &Arc<App>, provider: Provider) -> Vec<String> {
             .get(format!("{}/v1/models?limit=100", upstream.claude_api))
             .headers(claude_headers(&HeaderMap::new(), false, &f, &app.claude_version(), &crate::util::uuid_v4())),
         Provider::Codex => app.http.get(format!("{}/models?client_version={CODEX_VERSION}", upstream.codex_api)).headers(codex_headers(&HeaderMap::new(), &f, false)),
+        Provider::Gemini => unreachable!(),
     };
     let list: Vec<String> = match req.timeout(std::time::Duration::from_secs(10)).send().await {
         Ok(r) if r.status().is_success() => {
@@ -926,7 +1069,7 @@ async fn upstream_models(app: &Arc<App>, provider: Provider) -> Vec<String> {
 async fn models(app: &Arc<App>, pin: Option<&str>) -> Response {
     let mut data = Vec::new();
     let accounts = app.store.list();
-    for provider in [Provider::Claude, Provider::Codex] {
+    for provider in [Provider::Claude, Provider::Codex, Provider::Gemini] {
         let mine: Vec<_> = accounts.iter().filter(|a| a.provider() == provider && !a.file.read().unwrap().disabled).collect();
         if mine.is_empty() {
             continue;
@@ -935,7 +1078,11 @@ async fn models(app: &Arc<App>, pin: Option<&str>) -> Response {
             && !mine.iter().any(|a| a.id() == p || a.label().eq_ignore_ascii_case(p)) {
                 continue;
             }
-        let owner = if provider == Provider::Claude { "anthropic" } else { "openai" };
+        let owner = match provider {
+            Provider::Claude => "anthropic",
+            Provider::Codex => "openai",
+            Provider::Gemini => "google",
+        };
         for id in upstream_models(app, provider).await {
             data.push(json!({"id": id, "object": "model", "type": "model", "display_name": id, "created": 0, "created_at": "2025-01-01T00:00:00Z", "owned_by": owner}));
         }
@@ -954,6 +1101,7 @@ mod tests {
         assert_eq!(provider_for_model("claude-opus-5-5"), Some(Provider::Claude));
         assert_eq!(provider_for_model("gpt-5.6-codex"), Some(Provider::Codex));
         assert_eq!(provider_for_model("o3"), Some(Provider::Codex));
+        assert_eq!(provider_for_model("gemini-2.5-pro"), Some(Provider::Gemini));
         assert_eq!(provider_for_model("llama"), None);
     }
 

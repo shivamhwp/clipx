@@ -127,7 +127,7 @@ struct StartReq {
 
 async fn login_start(State(app): State<Arc<App>>, Json(r): Json<StartReq>) -> Response {
     let Some(provider) = Provider::parse(&r.provider) else {
-        return err(StatusCode::BAD_REQUEST, "provider must be claude or codex");
+        return err(StatusCode::BAD_REQUEST, "provider must be claude, codex, or gemini");
     };
     let f = oauth::start(&app, provider);
     Json(json!({"flow_id": f.id, "url": f.url, "hint": f.hint})).into_response()

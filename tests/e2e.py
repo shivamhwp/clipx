@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,7 +22,9 @@ BIN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "target/release/c
 MOCK, PORT, RELAY = 18901, 18902, 18903
 HOME = tempfile.mkdtemp(prefix="clipx-e2e-")
 ENV = dict(os.environ, CLIPX_HOME=HOME, CLIPX_CLAUDE_API=f"http://127.0.0.1:{MOCK}", CLIPX_CLAUDE_TOKEN_URL=f"http://127.0.0.1:{MOCK}/oauth/claude",
-           CLIPX_CODEX_API=f"http://127.0.0.1:{MOCK}/codex", CLIPX_CODEX_TOKEN_URL=f"http://127.0.0.1:{MOCK}/oauth/codex", CLIPX_LOG="warn")
+           CLIPX_CODEX_API=f"http://127.0.0.1:{MOCK}/codex", CLIPX_CODEX_TOKEN_URL=f"http://127.0.0.1:{MOCK}/oauth/codex",
+           CLIPX_GEMINI_API=f"http://127.0.0.1:{MOCK}", CLIPX_GEMINI_TOKEN_URL=f"http://127.0.0.1:{MOCK}/oauth/gemini",
+           CLIPX_GEMINI_USERINFO_URL=f"http://127.0.0.1:{MOCK}/oauth2/v2/userinfo", CLIPX_LOG="warn")
 PROCS = []
 PASSED = []
 
@@ -238,6 +241,85 @@ try:
     s, st = req("GET", "/api/state", headers=A)
     check("codex quota parsed", any(q["name"] == "5h" and q["used_pct"] == 37 for q in {a["label"]: a for a in st["accounts"]}["codex-x"]["quota"]))
 
+    # ---------------- gemini
+    accounts_g = [
+        {"id": "gaa", "provider": "gemini", "label": "gemini-a", "email": "a@g", "access_token": "gemini-limited", "project_id": "proj-a", "expires_at": 0},
+        {"id": "gbb", "provider": "gemini", "label": "gemini-b", "email": "b@g", "access_token": "gemini-ok-b", "project_id": "proj-b", "expires_at": 0},
+        {"id": "gcc", "provider": "gemini", "label": "gemini-c", "email": "c@g", "access_token": "gemini-old", "refresh_token": "gemini-rt-good", "project_id": "proj-c", "expires_at": 0},
+    ]
+    s, r = req("POST", "/api/accounts/import", accounts_g, A)
+    check("import gemini accounts", s == 200 and len(r["accounts"]) == 3, r)
+
+    # CLIProxyAPI gemini-cli auth file format: OAuth2 token nested under "token".
+    cpa_gemini = {
+        "type": "gemini",
+        "token": {"access_token": "gemini-ok-cpa", "refresh_token": "gemini-rt-cpa", "expiry": "2099-01-01T00:00:00Z"},
+        "project_id": "proj-cpa",
+        "email": "cpa@g",
+    }
+    s, r = req("POST", "/api/accounts/import", cpa_gemini, A)
+    check("import cliproxyapi gemini file", s == 200 and r["accounts"][0]["email"] == "cpa@g" and r["accounts"][0]["provider"] == "gemini", r)
+    req("PATCH", "/api/accounts/" + r["accounts"][0]["id"], {"disabled": True}, A)
+
+    s, r = req("GET", "/v1/models", headers=K)
+    check("gemini models listed", any(m["id"].startswith("gemini") for m in r["data"]), r)
+
+    mock_reset()
+    s, r = req("POST", "/v1/chat/completions", {"model": "gemini-x", "messages": [{"role": "user", "content": "hi"}]}, K)
+    check("chat->gemini", s == 200 and r["choices"][0]["message"]["content"].startswith("hello from") and r["usage"]["prompt_tokens"] == 15, r)
+
+    s, h, body = req("POST", "/v1/chat/completions", {"model": "gemini-x", "stream": True, "stream_options": {"include_usage": True}, "messages": [{"role": "user", "content": "hi"}]}, K, raw=True)
+    btext = body.decode()
+    text = "".join(json.loads(l[6:])["choices"][0]["delta"].get("content", "") for l in btext.splitlines() if l.startswith("data: {") and json.loads(l[6:])["choices"])
+    check("chat->gemini stream", s == 200 and text.startswith("hello from") and btext.rstrip().endswith("data: [DONE]") and '"completion_tokens":7' in btext, body[:400])
+
+    # Native Gemini API
+    mock_reset()
+    s, r = req("POST", "/v1beta/models/gemini-x:generateContent", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K)
+    check("native generateContent", s == 200 and r["candidates"][0]["content"]["parts"][0]["text"].startswith("hello from") and r["usageMetadata"]["promptTokenCount"] == 15, r)
+
+    s, h, body = req("POST", "/v1beta/models/gemini-x:streamGenerateContent?alt=sse", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K, raw=True)
+    check("native streamGenerateContent", s == 200 and b'"text":"hello' in body and b"finishReason" in body, body[:300])
+
+    s, r = req("POST", "/v1beta/models/gemini-x:countTokens", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K)
+    check("native countTokens", s == 200 and r["totalTokens"] == 9, r)
+
+    s, r = req("POST", "/v1beta/models/gemini-x:generateContent", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, {"x-goog-api-key": KEY})
+    check("x-goog-api-key auth", s == 200, r)
+
+    s, r = req("GET", "/v1/models?key=" + KEY)
+    check("?key= auth", s == 200, r)
+
+    # 429 cooldown + rotation, and refresh of an expired access token.
+    mock_reset()
+    seen = set()
+    for i in range(3):
+        s, r = req("POST", "/v1/chat/completions", {"model": "gemini-x", "messages": [{"role": "user", "content": "x"}]}, K)
+        check(f"gemini rotation {i} ok", s == 200, r)
+        seen.add(last_upstream("/v1internal:")["headers"]["authorization"])
+    check("gemini rotation avoids limited account", "Bearer gemini-limited" not in seen, seen)
+
+    s, st = req("GET", "/api/state", headers=A)
+    accs = {a["label"]: a for a in st["accounts"]}
+    check("gemini 429 account cooling", accs["gemini-a"]["status"] == "cooling" and accs["gemini-a"]["cooldown_until"] > time.time() + 30, accs["gemini-a"])
+    check("gemini 401 account refreshed", accs["gemini-c"]["status"] == "ready" and accs["gemini-c"]["last_refresh"] > 0, accs["gemini-c"])
+    saved = json.load(open(os.path.join(HOME, "accounts", "gcc.json")))
+    check("gemini refreshed token persisted", saved["access_token"] == "gemini-ok-refreshed" and saved["refresh_token"] == "gemini-rt-good-2", saved)
+
+    time.sleep(0.2)
+    s, u = req("GET", "/api/usage?days=7", headers=A)
+    gemini_requests = u["by_account"].get("gemini-b", {}).get("requests", 0) + u["by_account"].get("gemini-c", {}).get("requests", 0)
+    check("gemini usage recorded", gemini_requests >= 1, u["by_account"])
+
+    # Full login flow (start -> paste callback -> token exchange -> userinfo -> loadCodeAssist/onboardUser).
+    s, r = req("POST", "/api/login/start", {"provider": "gemini"}, A)
+    check("gemini login start", s == 200 and "accounts.google.com" in r["url"] and "127.0.0.1:1456" in r["hint"], r)
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(r["url"]).query)["state"][0]
+    s, r = req("POST", "/api/login/complete", {"flow_id": r["flow_id"], "callback": f"http://127.0.0.1:1456/oauth2callback?code=gemini-code-good&state={state}"}, A)
+    check("gemini login completes", s == 200 and r["account"]["email"] == "new-gemini-login@x" and r["account"]["provider"] == "gemini", r)
+    new_acc = json.load(open(os.path.join(HOME, "accounts", r["account"]["id"] + ".json")))
+    check("gemini login ran code assist setup", new_acc["project_id"] == "proj-new-login" and new_acc["tier"] == "Free", new_acc)
+
     # Keys
     s, r = req("POST", "/api/keys", {"name": "second"}, A)
     k2 = r["key"]
@@ -351,7 +433,7 @@ try:
     s, st = req("GET", "/api/state", headers=A)
     s, u = req("GET", "/api/usage?days=1", headers=A)
     total = sum(t["requests"] for t in u["by_account"].values())
-    check("state survives restart", len(st["accounts"]) == 5 and total > 1000, (len(st["accounts"]), total))
+    check("state survives restart", len(st["accounts"]) == 10 and total > 1000, (len(st["accounts"]), total))
 
     print(f"\nall {len(PASSED)} checks passed")
 finally:

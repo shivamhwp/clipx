@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 
 pub const DEFAULT_MAX_TOKENS: u64 = 32000;
 
-fn text_of(content: &Value) -> String {
+pub(crate) fn text_of(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),
         Value::Array(parts) => parts
@@ -18,7 +18,7 @@ fn text_of(content: &Value) -> String {
     }
 }
 
-fn data_url(url: &str) -> Option<(String, String)> {
+pub(crate) fn data_url(url: &str) -> Option<(String, String)> {
     let rest = url.strip_prefix("data:")?;
     let (meta, data) = rest.split_once(',')?;
     let media = meta.strip_suffix(";base64")?;
