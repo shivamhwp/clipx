@@ -250,6 +250,12 @@ pub async fn ensure_fresh(app: &App, acc: &Account, margin: u64) -> Result<(), S
 }
 
 pub async fn refresh(app: &App, acc: &Account) -> Result<(), String> {
+    if acc.file.read().unwrap().linked.is_some() {
+        return match app.store.reload_linked(acc)? {
+            true => Ok(()),
+            false => Err("waiting for the linked file to get a new token".into()),
+        };
+    }
     let (provider, refresh_token, no_refresh) = {
         let f = acc.file.read().unwrap();
         (f.provider, f.refresh_token.clone(), f.no_refresh)
@@ -339,6 +345,13 @@ pub async fn refresh_loop(app: Arc<App>) {
     loop {
         tick.tick().await;
         for acc in app.store.list() {
+            if acc.file.read().unwrap().linked.is_some() {
+                // Cheap: one small file read a minute. Also revives an account the owner re-logged in.
+                if let Err(e) = app.store.reload_linked(&acc) {
+                    tracing::warn!("{}: {e}", acc.label());
+                }
+                continue;
+            }
             let skip = {
                 let f = acc.file.read().unwrap();
                 f.disabled || acc.state.lock().unwrap().needs_login

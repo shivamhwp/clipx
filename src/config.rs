@@ -19,6 +19,7 @@ pub enum TunnelMode {
     Off,
     Relay,
     Cloudflare,
+    Tailscale,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -37,6 +38,12 @@ pub struct ConnectConfig {
     /// Shared secret the relay may require before it accepts new names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_secret: Option<String>,
+    /// Tailscale: HTTPS port to serve on. Funnel allows 443, 8443 and 10000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts_port: Option<u16>,
+    /// Tailscale: serve inside the tailnet only, instead of on the internet with Funnel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tailnet_only: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

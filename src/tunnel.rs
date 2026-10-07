@@ -91,8 +91,15 @@ fn set_status(app: &App, f: impl FnOnce(&mut crate::app::TunnelStatus)) {
 /// Keeps the configured tunnel running and restarts it when the config changes.
 pub async fn supervise(app: Arc<App>, router: Router) {
     let mut ctl = app.tunnel_ctl.subscribe();
+    let mut served: Option<(u16, bool)> = None;
     loop {
         let connect = app.cfg.read().unwrap().connect.clone();
+        // Leaving Tailscale mode, or moving it, takes our mount down. Other mounts stay.
+        let wanted = (connect.mode == TunnelMode::Tailscale).then(|| (connect.ts_port.unwrap_or(443), connect.tailnet_only));
+        if let Some(old) = served.take().filter(|o| Some(*o) != wanted) {
+            tailscale_off(old.0, old.1).await;
+        }
+        served = wanted;
         set_status(&app, |s| {
             *s = crate::app::TunnelStatus { mode: format!("{:?}", connect.mode).to_lowercase(), since: now(), ..Default::default() };
         });
@@ -101,6 +108,7 @@ pub async fn supervise(app: Arc<App>, router: Router) {
                 TunnelMode::Off => std::future::pending::<()>().await,
                 TunnelMode::Relay => relay_agent(app.clone(), router.clone()).await,
                 TunnelMode::Cloudflare => cloudflare(app.clone()).await,
+                TunnelMode::Tailscale => tailscale(app.clone()).await,
             }
         };
         tokio::select! {
@@ -333,6 +341,109 @@ async fn serve_stream(
     }
     let _ = out.send(send(RES_END, b"")).await;
     streams.lock().unwrap().remove(&id);
+}
+
+// ---------------------------------------------------------------- tailscale serve / funnel
+
+fn tailscale_bin() -> Option<PathBuf> {
+    let mac = PathBuf::from("/Applications/Tailscale.app/Contents/MacOS/Tailscale");
+    std::env::var_os("PATH")
+        .and_then(|paths| std::env::split_paths(&paths).map(|d| d.join("tailscale")).find(|p| p.exists()))
+        .or_else(|| mac.exists().then_some(mac))
+}
+
+/// Run a tailscale command with a deadline. Funnel can stop and wait for someone to
+/// approve it in the admin console; the deadline turns that into an error with the link.
+async fn ts(args: &[&str]) -> Result<String, String> {
+    let bin = tailscale_bin().ok_or("tailscale is not installed")?;
+    let child = tokio::process::Command::new(bin)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("running tailscale: {e}"))?;
+    let out = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output()).await;
+    let out = match out {
+        Ok(o) => o.map_err(|e| e.to_string())?,
+        Err(_) => return Err(format!("tailscale {} did not finish; it may be waiting for approval in the tailscale admin console", args[0])),
+    };
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if out.status.success() {
+        return Ok(text);
+    }
+    let text = text.trim();
+    if text.contains("Access denied") || text.contains("permission") {
+        return Err(format!("{text}. allow your user once with: sudo tailscale set --operator=$USER"));
+    }
+    Err(text.chars().take(400).collect())
+}
+
+/// This machine's name on the tailnet, e.g. box.tail1234.ts.net.
+async fn tailscale_host() -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_str(&ts(&["status", "--json"]).await?).map_err(|e| e.to_string())?;
+    if v["BackendState"] != "Running" {
+        return Err(format!("tailscale is {}; run `tailscale up`", v["BackendState"].as_str().unwrap_or("not running")));
+    }
+    let host = v["Self"]["DNSName"].as_str().unwrap_or("").trim_end_matches('.');
+    if host.is_empty() {
+        return Err("tailscale has no DNS name for this machine; turn on MagicDNS".into());
+    }
+    Ok(host.to_string())
+}
+
+fn ts_url(host: &str, port: u16) -> String {
+    if port == 443 { format!("https://{host}") } else { format!("https://{host}:{port}") }
+}
+
+/// Mount clipx at `/` on the chosen HTTPS port and keep it there.
+async fn tailscale(app: Arc<App>) {
+    let (port, tailnet_only, local) = {
+        let cfg = app.cfg.read().unwrap();
+        (cfg.connect.ts_port.unwrap_or(443), cfg.connect.tailnet_only, cfg.port())
+    };
+    let target = format!("http://127.0.0.1:{local}");
+    let https = format!("--https={port}");
+    loop {
+        let result = async {
+            let host = tailscale_host().await?;
+            // Re-apply only when our mount is missing, so a healthy setup is left alone.
+            let status: serde_json::Value = serde_json::from_str(&ts(&["serve", "status", "--json"]).await?).unwrap_or_default();
+            let hp = format!("{host}:{port}");
+            let mounted = status["Web"][&hp]["Handlers"]["/"]["Proxy"].as_str() == Some(target.as_str());
+            let funneled = status["AllowFunnel"][&hp].as_bool() == Some(true);
+            if !mounted || funneled == tailnet_only {
+                let verb = if tailnet_only { "serve" } else { "funnel" };
+                ts(&[verb, "--bg", "--yes", &https, &target]).await?;
+            }
+            Ok::<String, String>(ts_url(&host, port))
+        }
+        .await;
+        match result {
+            Ok(url) => set_status(&app, |s| {
+                if !s.connected {
+                    tracing::info!("tailscale serving {url}");
+                    s.since = now();
+                }
+                s.connected = true;
+                s.public_url = Some(url);
+                s.error = None;
+            }),
+            Err(e) => set_status(&app, |s| {
+                s.connected = false;
+                s.error = Some(e);
+            }),
+        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+async fn tailscale_off(port: u16, tailnet_only: bool) {
+    let verb = if tailnet_only { "serve" } else { "funnel" };
+    if let Err(e) = ts(&[verb, "--yes", &format!("--https={port}"), "--set-path", "/", "off"]).await {
+        tracing::warn!("removing tailscale mount: {e}");
+    }
 }
 
 // ---------------------------------------------------------------- cloudflare quick tunnel

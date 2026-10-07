@@ -17,13 +17,14 @@ The installer downloads the binary for your OS and CPU, checks its SHA-256, and 
 1. writes `~/.clipx/config.toml` with a random admin token,
 2. creates your first API key and prints it once,
 3. installs a service (systemd on Linux, launchd on macOS, or a background process where neither exists) and starts it,
-4. opens a Cloudflare quick tunnel and prints the public URL, the dashboard link, and copy-paste config for Claude Code, Codex and OpenAI SDKs.
+4. turns on remote access and prints the public URL, the dashboard link, and copy-paste config for Claude Code, Codex and OpenAI SDKs. If Tailscale is running on the box, clipx serves itself through Tailscale Funnel at a fixed `https://<box>.<tailnet>.ts.net` address. Otherwise, or if Funnel isn't allowed on your tailnet, it opens a Cloudflare quick tunnel.
 
 The whole run takes about 10 seconds. Then add an account from the dashboard or with `clipx login claude` / `clipx login codex`.
 
 Setup flags pass through the installer:
 
 ```sh
+curl -fsSL …/install.sh | sh -s -- --tunnel tailscale --ts-port 10000
 curl -fsSL …/install.sh | sh -s -- --relay https://relay.example.com --name mybox
 curl -fsSL …/install.sh | sh -s -- --tunnel off --public   # plain HTTP on 0.0.0.0:8318
 ```
@@ -82,13 +83,21 @@ clipx import ~/.cli-proxy-api            # a directory or single file
 clipx import ~/.cli-proxy-api --no-refresh
 ```
 
-Use `--no-refresh` while CLIProxyAPI still runs on the same accounts. Both tools refreshing one login rotates the refresh token and logs the other one out.
+Both tools refreshing one login rotates the refresh token and logs the other one out. While CLIProxyAPI still runs on the same accounts, import with `--link`:
+
+```sh
+clipx import --link ~/.cli-proxy-api/claude-me@example.com.json
+```
+
+A linked account never refreshes its own token. clipx re-reads the file every minute, and after any 401, so it always uses the token CLIProxyAPI last saved. `--no-refresh` copies the token once and never refreshes it, which only lasts until that token expires.
 
 ## Remote access
 
-Two ways, switchable from the dashboard or `clipx connect`:
+Three ways, switchable from the dashboard or `clipx connect`:
 
-**Cloudflare quick tunnel** (`clipx connect cloudflare`, the default). No account or server needed. clipx downloads `cloudflared` on first use. The URL changes when clipx restarts.
+**Tailscale** (`clipx connect tailscale`, the default when Tailscale is running). A fixed `https://<box>.<tailnet>.ts.net` address. clipx asks Tailscale to proxy `/` on one HTTPS port to itself and checks every minute that the mount is still there. Funnel, the default, makes it reachable from the internet; it works on ports 443, 8443 and 10000 (`--port 10000`). `--tailnet-only` keeps it on your own devices. clipx only touches its own `/` mount, so other paths you serve on the same port keep working. On Linux, your user needs permission to change Tailscale's config once: `sudo tailscale set --operator=$USER`.
+
+**Cloudflare quick tunnel** (`clipx connect cloudflare`). No account or server needed. clipx downloads `cloudflared` on first use. The URL changes when clipx restarts.
 
 **clipx relay** (`clipx connect https://relay.example.com --name mybox`). A stable URL from a relay you run. The box keeps one outbound WebSocket to the relay, so it needs no open ports. Every HTTP request, including streams, travels over that connection as its own stream. The first box to claim a name owns it; its key is stored on the relay as a hash.
 
@@ -112,13 +121,13 @@ The dashboard and admin API need the admin token, and the proxy needs an API key
 
 ## Dashboard
 
-Open the URL setup printed (the `#token=` part signs you in; it never reaches the server). Pages:
+Open the URL setup printed (the `#token=` part signs you in; it never reaches the server). It follows your system's light or dark theme and works on phones. Pages:
 
 - overview: health, memory, recent requests, and config snippets for your tools
 - accounts: add accounts by logging in, import JSON, enable, disable, set priority, rename, refresh, clear errors, and see usage windows
 - api keys: create and revoke
 - usage: tokens per day, per account, per model, for up to 90 days
-- remote access: switch between Cloudflare, a relay, or off
+- remote access: switch between Tailscale, Cloudflare, a relay, or off
 - settings: routing strategy and retries
 
 Logging in on a remote box works without port forwarding. Claude's sign-in page shows a code to paste back. For ChatGPT, the final redirect to `localhost:1455` fails to load on your laptop; paste that page's URL into the dashboard.
@@ -130,8 +139,9 @@ clipx setup        configure, install the service, start, connect
 clipx status       health, remote URL, accounts and their usage windows
 clipx login claude | codex
 clipx accounts
-clipx import <path> [--no-refresh]
+clipx import <path> [--link | --no-refresh]
 clipx keys [list | create <name> | revoke <id>]
+clipx connect tailscale [--port p] [--tailnet-only]
 clipx connect off | cloudflare | <relay-url> [--name n] [--secret s]
 clipx env          config snippets for your tools
 clipx start | stop | restart | logs [-f] | uninstall
@@ -149,7 +159,7 @@ cargo build --release
 python3 tests/e2e.py target/release/clipx
 ```
 
-`tests/e2e.py` runs the real binary against a fake Anthropic and ChatGPT upstream and a local relay: rotation, rate limits, refresh, translation, streaming through the relay, client hang-ups, relay restarts, 1000 streams at 200 concurrency, and restart persistence.
+`tests/e2e.py` runs the real binary against a fake Anthropic and ChatGPT upstream, a fake `tailscale` command and a local relay: rotation, rate limits, refresh, linked accounts, translation, Tailscale mounts, streaming through the relay, client hang-ups, relay restarts, 1000 streams at 200 concurrency, and restart persistence.
 
 Static Linux builds: `CC_x86_64_unknown_linux_musl=musl-gcc cargo build --release --target x86_64-unknown-linux-musl`. Tagging `v*` builds Linux and macOS binaries and publishes a release with `SHA256SUMS`.
 

@@ -537,7 +537,7 @@ where
         match status.as_u16() {
             401 | 403 => {
                 // Try one forced refresh on the same account before moving on.
-                if !refreshed.contains(&id) && !file.no_refresh && file.refresh_token.is_some() {
+                if !refreshed.contains(&id) && (file.linked.is_some() || (!file.no_refresh && file.refresh_token.is_some())) {
                     refreshed.push(id.clone());
                     let _guard = acc.refresh_lock.lock().await;
                     if acc.file.read().unwrap().access_token == file.access_token && oauth::refresh(app, &acc).await.is_ok() {
@@ -556,8 +556,9 @@ where
             }
             408 | 500 | 502 | 503 | 504 | 520..=599 => note_failure(&acc, &format!("{status}: {snippet}"), 0),
             _ => {
-                acc.state.lock().unwrap().failures += 1;
-                Recorder::new(ctx, provider, acc.clone(), model).finish(Tokens::default(), Some(format!("{status}: {snippet}")));
+                let mut rec = Recorder::new(ctx, provider, acc.clone(), model);
+                rec.status = status.as_u16();
+                rec.finish(Tokens::default(), Some(format!("{status}: {snippet}")));
                 return Err(upstream_error_response(status, &headers, body));
             }
         }

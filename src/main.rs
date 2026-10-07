@@ -48,13 +48,17 @@ enum Cmd {
         /// Never refresh imported tokens (use when another tool still refreshes them).
         #[arg(long)]
         no_refresh: bool,
+        /// Keep following the source file: clipx re-reads it for new tokens and never
+        /// refreshes them itself. For logins CLIProxyAPI keeps refreshing.
+        #[arg(long, conflicts_with = "no_refresh")]
+        link: bool,
     },
     /// Manage client API keys.
     Keys {
         #[command(subcommand)]
         action: Option<KeysCmd>,
     },
-    /// Configure remote access: off, cloudflare, or relay <url>.
+    /// Configure remote access: off, tailscale, cloudflare, or relay <url>.
     Connect {
         mode: String,
         relay: Option<String>,
@@ -62,6 +66,12 @@ enum Cmd {
         name: Option<String>,
         #[arg(long)]
         secret: Option<String>,
+        /// Tailscale: HTTPS port (Funnel allows 443, 8443 and 10000).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Tailscale: keep it inside your tailnet instead of on the internet.
+        #[arg(long)]
+        tailnet_only: bool,
     },
     /// Print environment snippets for Claude Code, Codex and OpenAI SDKs.
     Env {
@@ -110,9 +120,13 @@ struct SetupArgs {
     /// Listen on all interfaces instead of 127.0.0.1.
     #[arg(long)]
     public: bool,
-    /// Remote access: cloudflare (default), relay, or off.
+    /// Remote access: tailscale, cloudflare, relay, or off. Default: tailscale when it is
+    /// running on this machine, otherwise cloudflare.
     #[arg(long)]
     tunnel: Option<String>,
+    /// Tailscale: HTTPS port (Funnel allows 443, 8443 and 10000).
+    #[arg(long)]
+    ts_port: Option<u16>,
     /// Relay URL (implies --tunnel relay).
     #[arg(long)]
     relay: Option<String>,
@@ -335,6 +349,17 @@ fn print_accounts(state: &Value) {
     }
 }
 
+/// A quick, synchronous check used to pick setup's default remote access.
+fn tailscale_running() -> bool {
+    std::process::Command::new("tailscale")
+        .args(["status", "--json"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+        .is_some_and(|v| v["BackendState"] == "Running")
+}
+
 fn base_url(state: &Value, local: bool) -> String {
     let public = state["tunnel"]["public_url"].as_str().filter(|_| state["tunnel"]["connected"] == true && !local);
     public.map(|u| u.trim_end_matches('/').to_string()).unwrap_or_else(|| state["local_url"].as_str().unwrap_or("").to_string())
@@ -390,7 +415,7 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
             Ok(())
         }
         Cmd::Login { provider } => login(home, &provider).await,
-        Cmd::Import { path, no_refresh } => {
+        Cmd::Import { path, no_refresh, link } => {
             let api = Api::new(home)?;
             let files: Vec<PathBuf> = if path.is_dir() {
                 let mut v: Vec<PathBuf> = std::fs::read_dir(&path).map_err(|e| e.to_string())?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
@@ -407,6 +432,10 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
                 };
                 if no_refresh {
                     v["no_refresh"] = json!(true);
+                }
+                if link {
+                    let abs = std::fs::canonicalize(&f).map_err(|e| e.to_string())?;
+                    v["linked"] = json!(abs.to_string_lossy());
                 }
                 match api.post("/accounts/import", v).await {
                     Ok(r) => {
@@ -442,18 +471,25 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
             }
             Ok(())
         }
-        Cmd::Connect { mode, relay, name, secret } => {
+        Cmd::Connect { mode, relay, name, secret, port, tailnet_only } => {
             let api = Api::new(home)?;
-            let mode = match mode.as_str() {
+            let mut body = json!({"relay": relay, "name": name, "relay_secret": secret});
+            body["mode"] = json!(match mode.as_str() {
                 "off" | "none" => "off",
                 "cloudflare" | "cf" => "cloudflare",
+                "tailscale" | "ts" => {
+                    body["ts_port"] = json!(port);
+                    body["tailnet_only"] = json!(tailnet_only);
+                    "tailscale"
+                }
                 "relay" => "relay",
                 url if url.starts_with("http") => {
-                    return connect(&api, "relay", Some(url.to_string()), name, secret).await;
+                    body["relay"] = json!(url);
+                    "relay"
                 }
-                other => return Err(format!("unknown mode {other}; use off, cloudflare, or relay <url>")),
-            };
-            connect(&api, mode, relay, name, secret).await
+                other => return Err(format!("unknown mode {other}; use off, tailscale, cloudflare, or relay <url>")),
+            });
+            connect(&api, body).await
         }
         Cmd::Env { local } => {
             let s = Api::new(home)?.get("/state").await?;
@@ -509,9 +545,9 @@ async fn stop_all(home: &Path) -> Res {
     Ok(())
 }
 
-async fn connect(api: &Api, mode: &str, relay: Option<String>, name: Option<String>, secret: Option<String>) -> Res {
-    api.patch("/connect", json!({"mode": mode, "relay": relay, "name": name, "relay_secret": secret})).await?;
-    if mode == "off" {
+async fn connect(api: &Api, body: Value) -> Res {
+    api.patch("/connect", body.clone()).await?;
+    if body["mode"] == "off" {
         println!("remote access off");
         return Ok(());
     }
@@ -581,10 +617,15 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
         (_, Some(_)) | (Some("relay"), _) => Some(TunnelMode::Relay),
         (Some("off" | "none"), _) => Some(TunnelMode::Off),
         (Some("cloudflare" | "cf"), _) => Some(TunnelMode::Cloudflare),
-        (Some(other), _) => return Err(format!("unknown tunnel {other}; use cloudflare, relay or off")),
-        (None, None) if fresh => Some(TunnelMode::Cloudflare),
+        (Some("tailscale" | "ts"), _) => Some(TunnelMode::Tailscale),
+        (Some(other), _) => return Err(format!("unknown tunnel {other}; use tailscale, cloudflare, relay or off")),
+        (None, None) if fresh => Some(if tailscale_running() { TunnelMode::Tailscale } else { TunnelMode::Cloudflare }),
         _ => None,
     };
+    let auto_tunnel = fresh && args.tunnel.is_none() && args.relay.is_none();
+    if let Some(p) = args.ts_port {
+        cfg.connect.ts_port = Some(p);
+    }
     if let Some(t) = tunnel {
         cfg.connect.mode = t;
     }
@@ -645,9 +686,14 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
     if cfg.connect.mode != TunnelMode::Off {
         print!("remote       connecting");
         use std::io::Write;
-        for _ in 0..60 {
+        for i in 0..90 {
             if state["tunnel"]["connected"] == true {
                 break;
+            }
+            // Tailscale was only a guess; if Funnel is not allowed here, use a quick tunnel.
+            if auto_tunnel && i == 30 && cfg.connect.mode == TunnelMode::Tailscale {
+                print!(" ({}; trying cloudflare)", state["tunnel"]["error"].as_str().unwrap_or("tailscale did not answer"));
+                api.patch("/connect", json!({"mode": "cloudflare"})).await?;
             }
             print!(".");
             std::io::stdout().flush().ok();

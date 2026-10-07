@@ -22,6 +22,33 @@ MOCK, PORT, RELAY = 18901, 18902, 18903
 HOME = tempfile.mkdtemp(prefix="clipx-e2e-")
 ENV = dict(os.environ, CLIPX_HOME=HOME, CLIPX_CLAUDE_API=f"http://127.0.0.1:{MOCK}", CLIPX_CLAUDE_TOKEN_URL=f"http://127.0.0.1:{MOCK}/oauth/claude",
            CLIPX_CODEX_API=f"http://127.0.0.1:{MOCK}/codex", CLIPX_CODEX_TOKEN_URL=f"http://127.0.0.1:{MOCK}/oauth/codex", CLIPX_LOG="warn")
+# A fake `tailscale` on PATH, so remote access through Tailscale can be tested offline.
+FAKE_BIN = os.path.join(HOME, "fakebin")
+os.makedirs(FAKE_BIN)
+with open(os.path.join(FAKE_BIN, "tailscale"), "w") as f:
+    f.write(f"""#!{sys.executable}
+import json, os, sys
+d = {HOME!r}
+state, log = os.path.join(d, "ts-state.json"), os.path.join(d, "ts.log")
+a = sys.argv[1:]
+open(log, "a").write(" ".join(a) + "\\n")
+if a[:2] == ["status", "--json"]:
+    print(json.dumps({{"BackendState": "Running", "Self": {{"DNSName": "box.tailnet.ts.net."}}}}))
+elif a[:2] == ["serve", "status"]:
+    print(open(state).read() if os.path.exists(state) else "{{}}")
+elif a[0] in ("funnel", "serve") and a[-1] == "off":
+    port = next(x for x in a if x.startswith("--https=")).split("=")[1]
+    st = json.load(open(state)) if os.path.exists(state) else {{}}
+    st.get("Web", {{}}).get("box.tailnet.ts.net:" + port, {{}}).get("Handlers", {{}}).pop("/", None)
+    json.dump(st, open(state, "w"))
+elif a[0] in ("funnel", "serve"):
+    port = next(x for x in a if x.startswith("--https=")).split("=")[1]
+    hp = "box.tailnet.ts.net:" + port
+    st = {{"Web": {{hp: {{"Handlers": {{"/": {{"Proxy": a[-1]}}}}}}}}, "AllowFunnel": {{hp: a[0] == "funnel"}}}}
+    json.dump(st, open(state, "w"))
+""")
+os.chmod(os.path.join(FAKE_BIN, "tailscale"), 0o755)
+ENV["PATH"] = FAKE_BIN + os.pathsep + ENV.get("PATH", "")
 PROCS = []
 PASSED = []
 
@@ -249,6 +276,37 @@ try:
 
     s, h, body = req("GET", "/", raw=True)
     check("dashboard served", s == 200 and b"<title>clipx</title>" in body)
+
+    # ---------------- linked account: follows another tool's auth file
+    linked = os.path.join(HOME, "cpa-claude-linked.json")
+    json.dump({"type": "claude", "access_token": "claude-stale-linked", "refresh_token": "theirs", "email": "linked@x"}, open(linked, "w"))
+    s, r = req("POST", "/api/accounts/import", dict(json.load(open(linked)), linked=linked), A)
+    lacc = r["accounts"][0]
+    check("import linked account", s == 200 and lacc["linked"] == linked and lacc["no_refresh"], r)
+    json.dump({"type": "claude", "access_token": "claude-ok-linked", "refresh_token": "theirs-2", "email": "linked@x"}, open(linked, "w"))
+    mock_reset()
+    s, r = req("POST", f"/a/{lacc['label']}/v1/messages", {"model": "claude-x", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}, K)
+    toks = [e["headers"].get("authorization") for e in mock_log() if e["path"].startswith("/v1/messages")]
+    check("linked account reloads its file after a 401", s == 200 and toks[-1] == "Bearer claude-ok-linked", (s, toks))
+    check("linked account never calls the token endpoint", not any("/oauth/" in e["path"] for e in mock_log()))
+    s, st = req("GET", "/api/state", headers=A)
+    check("linked account ready", {a["id"]: a for a in st["accounts"]}[lacc["id"]]["status"] == "ready")
+    req("DELETE", "/api/accounts/" + lacc["id"], headers=A)
+
+    # ---------------- tailscale serve / funnel (fake tailscale binary)
+    s, r = req("PATCH", "/api/connect", {"mode": "tailscale", "ts_port": 10000}, A)
+    for _ in range(50):
+        st = req("GET", "/api/state", headers=A)[1]
+        if st["tunnel"]["connected"]:
+            break
+        time.sleep(0.1)
+    check("tailscale funnel connects", st["tunnel"]["public_url"] == "https://box.tailnet.ts.net:10000", st["tunnel"])
+    tslog = open(os.path.join(HOME, "ts.log")).read()
+    check("tailscale funnel mounts clipx at /", f"funnel --bg --yes --https=10000 http://127.0.0.1:{PORT}" in tslog, tslog)
+    req("PATCH", "/api/connect", {"mode": "off"}, A)
+    time.sleep(0.5)
+    tslog = open(os.path.join(HOME, "ts.log")).read()
+    check("leaving tailscale removes only our mount", "funnel --yes --https=10000 --set-path / off" in tslog, tslog)
 
     # ---------------- relay
     relay = subprocess.Popen([BIN, "relay", "--listen", f"127.0.0.1:{RELAY}", "--data", os.path.join(HOME, "relay")], env=dict(ENV, CLIPX_LOG="warn"), stderr=open(os.path.join(HOME, "relay.log"), "a"))

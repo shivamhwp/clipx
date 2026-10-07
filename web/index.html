@@ -3,116 +3,313 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>clipx</title>
 <link rel="icon" href="favicon.svg">
 <style>
-:root{--bg:#fafaf9;--fg:#18181b;--mut:#71717a;--line:#e4e4e7;--card:#fff;--acc:#18181b;--accfg:#fafafa;--ok:#15803d;--warn:#b45309;--bad:#b91c1c;--bar:#e4e4e7;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-@media (prefers-color-scheme:dark){:root{--bg:#0b0b0c;--fg:#e7e7e9;--mut:#8b8b93;--line:#26262a;--card:#121214;--acc:#e7e7e9;--accfg:#0b0b0c;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--bar:#26262a}}
+:root{
+  --bg:#0a0a0a;--card:#111;--fg:#f5f5f5;--muted:rgba(255,255,255,.03);--mfg:#8f8f8f;--accent:rgba(255,255,255,.045);
+  --border:rgba(255,255,255,.07);--input:rgba(255,255,255,.09);--primary:oklch(.571 .21 264);--pfg:#fff;
+  --success:#10b981;--sfg:#34d399;--warning:#f59e0b;--wfg:#fbbf24;--error:#ef4444;--efg:#f87171;
+  --sidebar:#111;--row-hover:rgba(255,255,255,.045);--row-sel:rgba(255,255,255,.06);--popover:#141414;
+  --shadow:0 18px 48px -12px rgba(0,0,0,.7);--overlay:rgba(0,0,0,.55);
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono","SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
+  --r:.5rem;color-scheme:dark}
+@media (prefers-color-scheme:light){:root{
+  --bg:#fcfcfc;--card:#fff;--fg:#27272a;--muted:#fafafa;--mfg:#71717a;--accent:#f4f4f5;--border:#e4e4e7;--input:#d4d4d8;
+  --primary:oklch(.488 .217 264);--sfg:#047857;--wfg:#b45309;--efg:#b91c1c;--sidebar:#fafafa;--row-hover:#f4f4f5;
+  --row-sel:#fff;--popover:#fff;--shadow:0 18px 48px -12px rgba(0,0,0,.2);--overlay:rgba(0,0,0,.3);color-scheme:light}}
 *{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
-a{color:inherit}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+a.link{text-decoration:underline;text-underline-offset:3px;text-decoration-color:color-mix(in srgb,currentColor 35%,transparent)}
 code,pre,.mono{font-family:var(--mono);font-size:12.5px}
-.app{display:grid;grid-template-columns:200px 1fr;min-height:100vh}
-nav{border-right:1px solid var(--line);padding:18px 12px;position:sticky;top:0;height:100vh}
-nav .brand{font:600 16px var(--mono);padding:0 8px 16px;display:flex;align-items:center;gap:8px}
-nav a{display:block;padding:6px 8px;text-decoration:none;color:var(--mut)}
-nav a.on,nav a:hover{color:var(--fg);background:var(--line)}
-nav .foot{position:absolute;bottom:16px;left:20px;right:12px;color:var(--mut);font-size:12px}
-main{padding:24px 32px;max-width:1100px;width:100%}
-h1{font-size:18px;margin:0 0 4px;font-weight:600}
-h2{font-size:14px;margin:28px 0 10px;font-weight:600}
-.sub{color:var(--mut);margin:0 0 20px}
-.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-.tile{border:1px solid var(--line);background:var(--card);padding:12px 14px}
-.tile b{display:block;font:600 20px var(--mono)}
-.tile span{color:var(--mut);font-size:12px}
-.card{border:1px solid var(--line);background:var(--card);padding:14px 16px;margin-bottom:10px}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.grow{flex:1}
-.pill{font:11px var(--mono);padding:1px 7px;border:1px solid currentColor}
-.ready{color:var(--ok)}.cooling{color:var(--warn)}.needs-login,.bad{color:var(--bad)}.disabled{color:var(--mut)}
-button,.btn{font:inherit;font-size:13px;padding:5px 11px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer;text-decoration:none;display:inline-block}
-button:hover,.btn:hover{border-color:var(--mut)}
-button.pri,.btn.pri{background:var(--acc);color:var(--accfg);border-color:var(--acc)}
-button.danger{color:var(--bad)}
-button:disabled{opacity:.5;cursor:default}
-input,select,textarea{font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--line);background:var(--bg);color:var(--fg);width:100%}
-textarea{font-family:var(--mono);font-size:12px;min-height:90px}
-label{display:block;color:var(--mut);font-size:12px;margin:10px 0 4px}
-table{width:100%;border-collapse:collapse}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
-th{color:var(--mut);font-weight:500;font-size:12px}
-td.n,th.n{text-align:right;font-family:var(--mono)}
-.q{display:grid;grid-template-columns:42px 1fr 64px;gap:8px;align-items:center;font-size:12px;margin-top:4px}
-.q .bar{height:6px;background:var(--bar)}
-.q .bar i{display:block;height:100%;background:var(--fg)}
-.q .bar i.hi{background:var(--bad)}
-.mut{color:var(--mut)}
-.err{color:var(--bad);font-size:12px;margin-top:6px;word-break:break-word}
-pre{background:var(--bg);border:1px solid var(--line);padding:10px 12px;overflow:auto;margin:6px 0;position:relative}
-pre button{position:absolute;top:6px;right:6px;font-size:11px;padding:2px 7px}
-.tabs{display:flex;gap:0;margin-bottom:-1px}
-.tabs button{border-bottom:none}
-.tabs button.on{background:var(--bg)}
-.chart{display:flex;align-items:flex-end;gap:3px;height:120px;border-bottom:1px solid var(--line);padding-top:8px}
-.chart div{flex:1;background:var(--fg);min-height:1px;position:relative}
-.chart div:hover::after{content:attr(data-t);position:absolute;bottom:100%;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);padding:2px 6px;font:11px var(--mono);white-space:nowrap}
-.login{max-width:380px;margin:12vh auto;padding:0 20px}
-.toast{position:fixed;bottom:18px;right:18px;background:var(--acc);color:var(--accfg);padding:8px 14px;font-size:13px;display:none;max-width:420px}
-.flow{border:1px dashed var(--mut);padding:14px 16px;margin:10px 0}
-.hidden{display:none}
-@media (max-width:760px){.app{grid-template-columns:1fr}nav{position:static;height:auto;border-right:none;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:2px;padding:10px}nav .brand{padding:6px 8px}nav .foot{display:none}main{padding:18px}}
+code{background:var(--accent);border-radius:4px;padding:1px 5px}
+svg.i{width:16px;height:16px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.hidden{display:none!important}
+.mut{color:var(--mfg)}
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-thumb{background:var(--input);border-radius:6px}
+
+/* shell */
+.app{display:flex;height:100vh;overflow:hidden}
+.side{width:248px;flex-shrink:0;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:8px}
+.brand{display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;font-weight:600;font-size:15px;letter-spacing:-.01em}
+.brand img{width:18px;height:18px}
+.tag{font:500 11px/1 var(--mono);color:var(--mfg);border:1px solid var(--border);border-radius:4px;padding:3px 5px}
+.nav{display:flex;flex-direction:column;gap:1px;margin-top:6px}
+.nav a,.side-btn{display:flex;align-items:center;gap:8px;height:32px;padding:0 10px;border-radius:var(--r);font-weight:500;color:color-mix(in srgb,var(--mfg) 85%,transparent);cursor:pointer;border:0;background:none;font:500 14px var(--sans);width:100%;text-align:left}
+.nav a svg,.side-btn svg{color:color-mix(in srgb,var(--mfg) 65%,transparent)}
+.nav a:hover,.side-btn:hover{background:var(--row-hover);color:var(--fg)}
+.nav a:hover svg,.side-btn:hover svg,.nav a.on svg{color:var(--fg)}
+.nav a.on{background:var(--row-sel);color:var(--fg)}
+.side-foot{margin-top:auto;display:flex;flex-direction:column;gap:2px}
+.conn{display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:12px;color:var(--mfg);min-width:0}
+.conn span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:var(--mfg)}
+.dot.ok{background:var(--success);box-shadow:0 0 0 3px color-mix(in srgb,var(--success) 18%,transparent)}
+.dot.warn{background:var(--warning)}.dot.bad{background:var(--error)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.top{height:52px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 20px}
+.top h1{font-size:14px;font-weight:500;margin:0;letter-spacing:-.005em}
+.top .grow{flex:1}
+.top .menu{display:none}
+.scroll{flex:1;overflow-y:auto;scrollbar-gutter:stable both-edges}
+.page{max-width:896px;margin:0 auto;padding:8px 24px 64px;display:flex;flex-direction:column;gap:32px}
+
+/* settings-style sections */
+.sec{display:flex;flex-direction:column;gap:10px}
+.sec-h{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:28px;padding:0 16px}
+.sec-h h2{margin:0;font-size:14px;font-weight:400;letter-spacing:-.005em;color:color-mix(in srgb,var(--fg) 70%,transparent)}
+.sec-h .acts{display:flex;gap:6px;align-items:center}
+.group{border:1px solid color-mix(in srgb,var(--border) 100%,transparent);border-radius:12px;background:color-mix(in srgb,var(--card) 40%,transparent);overflow:hidden}
+.group>*+*{border-top:1px solid var(--border)}
+.row{padding:12px 16px}
+.row-in{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:32px}
+.row-t{font-size:14px;font-weight:500;letter-spacing:-.005em;display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:20px}
+.row-d{margin:4px 0 0;font-size:13px;line-height:1.45;color:color-mix(in srgb,var(--mfg) 90%,transparent);max-width:36rem}
+.row-c{display:flex;align-items:center;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.row-x{margin-top:10px}
+.empty{padding:28px 16px;text-align:center;color:var(--mfg);font-size:13px}
+.note{display:flex;gap:10px;align-items:flex-start;padding:12px 16px;font-size:13px;color:var(--mfg)}
+.note svg{margin-top:2px}
+
+/* controls */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 10px;border-radius:var(--r);border:1px solid var(--input);background:color-mix(in srgb,var(--input) 32%,transparent);color:var(--fg);font:500 13px var(--sans);cursor:pointer;white-space:nowrap;transition:background .12s,transform .08s;user-select:none}
+.btn:hover{background:color-mix(in srgb,var(--input) 64%,transparent)}
+.btn:active{transform:scale(.97)}
+.btn svg{width:14px;height:14px;color:var(--mfg)}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:var(--pfg);box-shadow:inset 0 1px rgba(255,255,255,.16)}
+.btn.pri svg{color:inherit}
+.btn.pri:hover{background:color-mix(in srgb,var(--primary) 90%,var(--bg))}
+.btn.ghost{background:none;border-color:transparent;color:var(--mfg)}
+.btn.ghost:hover{background:var(--accent);color:var(--fg)}
+.btn.danger{color:var(--efg)}
+.btn.danger:hover{background:color-mix(in srgb,var(--error) 8%,transparent);border-color:color-mix(in srgb,var(--error) 32%,transparent)}
+.btn.ghost.danger:hover{border-color:transparent}
+.btn.xs{height:24px;padding:0 8px;font-size:12px;gap:4px}
+.btn.lg{height:34px;padding:0 14px;font-size:14px}
+.btn.icon{width:28px;padding:0}.btn.icon.xs{width:24px}
+.btn:disabled{opacity:.5;pointer-events:none}
+input,select,textarea{font:14px var(--sans);color:var(--fg);background:color-mix(in srgb,var(--input) 32%,transparent);border:1px solid var(--input);border-radius:var(--r);height:32px;padding:0 10px;outline:none;width:100%;transition:border-color .12s,box-shadow .12s}
+@media (prefers-color-scheme:light){input,select,textarea{background:var(--card)}}
+input::placeholder,textarea::placeholder{color:color-mix(in srgb,var(--mfg) 80%,transparent)}
+input:focus,select:focus,textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 22%,transparent)}
+select{appearance:none;padding-right:28px;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238f8f8f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center;background-size:14px}
+textarea{height:auto;min-height:110px;padding:8px 10px;font:12.5px/1.5 var(--mono);resize:vertical}
+.field{display:flex;flex-direction:column;gap:6px}
+.field label{font-size:13px;font-weight:500}
+.inline{display:flex;gap:8px;align-items:center}
+.sw{position:relative;width:34px;height:20px;border-radius:999px;background:var(--input);border:0;cursor:pointer;flex-shrink:0;transition:background .15s;padding:0}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+.sw.on{background:var(--primary)}.sw.on::after{transform:translateX(14px)}
+.badge{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:4px;font:500 11px/1 var(--sans);background:var(--accent);color:var(--mfg);white-space:nowrap}
+.badge.ok{background:color-mix(in srgb,var(--success) 14%,transparent);color:var(--sfg)}
+.badge.warn{background:color-mix(in srgb,var(--warning) 14%,transparent);color:var(--wfg)}
+.badge.bad{background:color-mix(in srgb,var(--error) 14%,transparent);color:var(--efg)}
+.badge.info{background:color-mix(in srgb,var(--primary) 16%,transparent);color:color-mix(in srgb,var(--primary) 70%,var(--fg))}
+.seg{display:inline-flex;padding:2px;gap:2px;border-radius:var(--r);background:var(--accent);border:1px solid var(--border)}
+.seg button{height:24px;padding:0 10px;border:0;border-radius:6px;background:none;color:var(--mfg);font:500 12px var(--sans);cursor:pointer}
+.seg button.on{background:var(--card);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.code{position:relative;margin-top:10px}
+.code pre{margin:0;padding:10px 40px 10px 12px;background:var(--muted);border:1px solid var(--border);border-radius:var(--r);overflow:auto;line-height:1.55;white-space:pre}
+.code .btn{position:absolute;top:6px;right:6px}
+.url{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}
+.url .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* stats, bars, tables */
+.stats{display:grid;grid-template-columns:repeat(3,1fr)}
+.stat{padding:14px 16px;border-top:1px solid var(--border)}
+.stat:nth-child(-n+3){border-top:0}
+.stat:not(:nth-child(3n+1)){border-left:1px solid var(--border)}
+.stat b{display:block;font-size:20px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stat span{font-size:12px;color:var(--mfg)}
+.stat b.bad{color:var(--efg)}
+.quota{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;font-size:12px;margin-top:8px}
+.bar{height:4px;border-radius:4px;background:var(--accent);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:4px;background:color-mix(in srgb,var(--fg) 55%,transparent)}
+.bar i.warn{background:var(--warning)}.bar i.bad{background:var(--error)}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th,.tbl td{text-align:left;padding:8px 16px;white-space:nowrap}
+.tbl th{font-size:12px;font-weight:500;color:var(--mfg)}
+.tbl tr+tr td{border-top:1px solid var(--border)}
+.tbl tr:first-child th{border-bottom:1px solid var(--border)}
+.tbl td.n,.tbl th.n{text-align:right;font-variant-numeric:tabular-nums}
+.tbl td.bad{color:var(--efg)}
+.tblw{overflow-x:auto}
+.chart{display:flex;align-items:flex-end;gap:4px;height:132px;padding:16px 16px 12px}
+.chart div{flex:1;min-height:2px;border-radius:3px 3px 1px 1px;background:color-mix(in srgb,var(--primary) 70%,transparent);position:relative;transition:background .1s}
+.chart div:hover{background:var(--primary)}
+.chart div:hover::after{content:attr(data-t);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--popover);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font:12px var(--sans);color:var(--fg);white-space:nowrap;box-shadow:var(--shadow);z-index:2}
+
+/* accounts */
+.acct{padding:14px 16px}
+.acct-h{display:flex;align-items:center;gap:12px}
+.pico{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--muted);display:grid;place-items:center;flex-shrink:0}
+.pico svg{width:16px;height:16px}
+.acct-n{flex:1;min-width:0}
+.acct-n .row-d{margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct-b{margin-left:44px}
+.acct-f{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:10px}
+.acct-f .meta{font-size:12px;color:var(--mfg);margin-right:auto}
+.err{margin-top:8px;font-size:12px;color:var(--efg);word-break:break-word}
+.prio{display:inline-flex;align-items:center;gap:2px;font-size:12px;color:var(--mfg);margin:0 4px}
+.prio b{font:500 12px var(--mono);color:var(--fg);min-width:14px;text-align:center}
+.radio{display:flex;gap:12px;align-items:flex-start;cursor:pointer}
+.radio:hover{background:var(--row-hover)}
+.rad{width:16px;height:16px;border-radius:50%;border:1px solid var(--input);margin-top:2px;flex-shrink:0;display:grid;place-items:center}
+.radio.on .rad{border-color:var(--primary);background:var(--primary)}
+.radio.on .rad::after{content:"";width:6px;height:6px;border-radius:50%;background:#fff}
+
+/* dialog, toast, login */
+.overlay{position:fixed;inset:0;background:var(--overlay);backdrop-filter:blur(2px);display:grid;place-items:center;z-index:20;padding:16px;animation:fade .12s}
+.dlg{width:100%;max-width:460px;background:var(--popover);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);animation:pop .14s}
+.dlg-h{padding:20px 20px 0}
+.dlg-h h3{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
+.dlg-h p{margin:6px 0 0;font-size:13px;color:var(--mfg)}
+.dlg-b{padding:16px 20px;display:flex;flex-direction:column;gap:14px}
+.dlg-f{display:flex;justify-content:flex-end;gap:8px;padding:14px 20px;border-top:1px solid var(--border);background:var(--muted);border-radius:0 0 16px 16px}
+.step{display:flex;gap:10px;font-size:13px}
+.step i{font-style:normal;width:20px;height:20px;border-radius:50%;background:var(--accent);border:1px solid var(--border);display:grid;place-items:center;font-size:11px;font-weight:600;flex-shrink:0}
+.pick{display:flex;flex-direction:column;gap:6px}
+.pick button{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--muted);color:var(--fg);font:500 14px var(--sans);cursor:pointer;text-align:left}
+.pick button:hover{background:var(--accent);border-color:var(--input)}
+.pick small{display:block;font-weight:400;font-size:12px;color:var(--mfg)}
+.toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:30}
+.toast{background:var(--popover);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:10px 14px;font-size:13px;max-width:380px;animation:pop .14s}
+.toast.bad{color:var(--efg)}
+.login{min-height:100vh;display:grid;place-items:center;padding:20px}
+.login .card{width:100%;max-width:576px;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:32px;box-shadow:var(--shadow)}
+.eyebrow{font:600 11px var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--mfg)}
+.login h1{margin:10px 0 6px;font-size:30px;line-height:1.15;font-weight:700;letter-spacing:-.02em}
+.login .lead{margin:0 0 24px;color:var(--mfg)}
+.login .info{margin-top:24px;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--muted);font-size:12.5px;color:var(--mfg)}
+@keyframes fade{from{opacity:0}}@keyframes pop{from{opacity:0;transform:scale(.98) translateY(4px)}}
+
+@media (max-width:760px){
+  .top .menu{display:inline-flex}
+  .side{position:fixed;inset:0 auto 0 0;z-index:15;transform:translateX(-100%);transition:transform .18s;box-shadow:var(--shadow)}
+  .side.open{transform:none}
+  .menu{display:inline-flex}
+  .top{padding:0 12px}
+  .page{padding:4px 12px 48px;gap:24px}
+  .row-in{grid-template-columns:1fr;gap:10px}.row-c{justify-content:flex-start}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .stat:nth-child(-n+3){border-top:1px solid var(--border)}.stat:nth-child(-n+2){border-top:0}
+  .stat:not(:nth-child(3n+1)){border-left:0}.stat:nth-child(2n){border-left:1px solid var(--border)}
+  .acct-b{margin-left:0}
+  .login .card{padding:24px}
+}
 </style>
 </head>
 <body>
 <div id="login" class="login hidden">
-  <h1>clipx</h1>
-  <p class="sub">enter the admin token. it is in <code>~/.clipx/config.toml</code> on the box, and <code>clipx setup</code> printed it.</p>
-  <form id="loginf"><input id="tok" type="password" placeholder="adm-…" autocomplete="current-password"><p></p><button class="pri">open dashboard</button><div id="loginerr" class="err"></div></form>
+  <form class="card" id="loginf">
+    <div class="eyebrow">clipx</div>
+    <h1>Sign in to this box</h1>
+    <p class="lead">Enter the admin token to manage accounts, keys and remote access.</p>
+    <div class="field"><label for="tok">Admin token</label><input id="tok" type="password" placeholder="adm-…" autocomplete="current-password"></div>
+    <div class="inline" style="margin-top:14px"><button class="btn pri">Continue</button></div>
+    <div id="loginerr" class="err"></div>
+    <div class="info">The token is in <code>~/.clipx/config.toml</code> on the box. The link <code>clipx setup</code> printed signs you in directly.</div>
+  </form>
 </div>
 <div id="app" class="app hidden">
-  <nav>
-    <div class="brand"><img src="favicon.svg" width="18" height="18" alt="">clipx</div>
-    <a href="#overview" data-p="overview">overview</a>
-    <a href="#accounts" data-p="accounts">accounts</a>
-    <a href="#keys" data-p="keys">api keys</a>
-    <a href="#usage" data-p="usage">usage</a>
-    <a href="#connect" data-p="connect">remote access</a>
-    <a href="#settings" data-p="settings">settings</a>
-    <div class="foot"><div id="ver"></div><a href="#" id="logout">sign out</a></div>
-  </nav>
-  <main id="main"></main>
+  <aside class="side" id="side">
+    <div class="brand"><img src="favicon.svg" alt="">clipx<span class="tag" id="ver"></span></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot">
+      <div class="conn" id="conn"></div>
+      <button class="side-btn" id="logout"></button>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="top"><button class="btn ghost icon menu" onclick="$('#side').classList.toggle('open')" aria-label="Menu"></button><h1 id="title"></h1><span class="grow"></span><div class="inline" id="actions"></div></header>
+    <div class="scroll" id="scroll"><div class="page" id="main"></div></div>
+  </div>
 </div>
-<div id="toast" class="toast"></div>
+<div id="dlg"></div>
+<div class="toasts" id="toasts"></div>
 <script>
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// A JS literal that is safe inside an HTML attribute: JSON-quote it, then HTML-escape it.
+const js=v=>esc(JSON.stringify(v));
+
+const ICONS={
+  overview:'<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>',
+  accounts:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  keys:'<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>',
+  usage:'<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+  connect:'<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  settings:'<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>',
+  logout:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
+  plus:'<path d="M5 12h14"/><path d="M12 5v14"/>',
+  copy:'<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  refresh:'<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  trash:'<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
+  pencil:'<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+  upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
+  external:'<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  info:'<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  up:'<path d="m18 15-6-6-6 6"/>',down:'<path d="m6 9 6 6 6-6"/>',
+  menu:'<line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>',
+  link:'<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" x2="16" y1="12" y2="12"/>',
+};
+const ic=n=>`<svg class="i" viewBox="0 0 24 24">${ICONS[n]||''}</svg>`;
+const PROVIDERS={
+  claude:{name:'Claude',sub:'Claude Pro or Max subscription',icon:'<svg viewBox="0 0 256 257"><path fill="#d97757" d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z"/></svg>'},
+  codex:{name:'ChatGPT',sub:'ChatGPT Plus, Pro or Business, used through Codex',icon:'<svg viewBox="0 0 256 260"><path fill="currentColor" d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z"/></svg>'},
+  gemini:{name:'Gemini',sub:'Google account, through Gemini Code Assist',icon:'<svg viewBox="0 0 296 298"><defs><linearGradient id="gm" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#3186ff"/><stop offset=".5" stop-color="#4fa0ff"/><stop offset="1" stop-color="#9168f6"/></linearGradient></defs><path fill="url(#gm)" d="M141.201 4.886c2.282-6.17 11.042-6.071 13.184.148l5.985 17.37a184.004 184.004 0 0 0 111.257 113.049l19.304 6.997c6.143 2.227 6.156 10.91.02 13.155l-19.35 7.082a184.001 184.001 0 0 0-109.495 109.385l-7.573 20.629c-2.241 6.105-10.869 6.121-13.133.025l-7.908-21.296a184 184 0 0 0-109.02-108.658l-19.698-7.239c-6.102-2.243-6.118-10.867-.025-13.132l20.083-7.467A183.998 183.998 0 0 0 133.291 26.28l7.91-21.394Z"/></svg>'},
+};
+const prov=p=>PROVIDERS[p]||{name:p,sub:'',icon:ic('accounts')};
+const PAGES=[['overview','Overview'],['accounts','Accounts'],['keys','API keys'],['usage','Usage'],['connect','Remote access'],['settings','Settings']];
+
 let TOKEN=localStorage.getItem('clipx_token')||'';
-let S=null, page='overview', flow=null, newKey=null, usageDays=7, usageData=null, reqs=null, importOpen=false, lastFp='';
+let S=null,page='overview',flow=null,usageDays=7,usageData=null,reqs=null,lastFp='',connMode=null;
 const hashTok=location.hash.match(/token=([^&]+)/);
 if(hashTok){TOKEN=decodeURIComponent(hashTok[1]);localStorage.setItem('clipx_token',TOKEN);history.replaceState(null,'',location.pathname+'#overview')}
 
 async function api(path,opt={}){
   const r=await fetch('api/'+path,{...opt,headers:{'authorization':'Bearer '+TOKEN,'content-type':'application/json'},body:opt.body?JSON.stringify(opt.body):undefined});
-  if(r.status===401){showLogin('wrong or missing admin token');throw new Error('unauthorized')}
+  if(r.status===401){showLogin('That token did not work.');throw new Error('unauthorized')}
   const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(j.error||('http '+r.status));
+  if(!r.ok)throw new Error(j.error||('HTTP '+r.status));
   return j;
 }
-function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',2600)}
-function showLogin(err){$('#app').classList.add('hidden');$('#login').classList.remove('hidden');$('#loginerr').textContent=err||''}
+function toast(m,bad){const t=document.createElement('div');t.className='toast'+(bad?' bad':'');t.textContent=m;$('#toasts').append(t);setTimeout(()=>t.remove(),2800)}
+function showLogin(err){$('#app').classList.add('hidden');$('#login').classList.remove('hidden');$('#loginerr').textContent=err||'';$('#tok').focus()}
 $('#loginf').onsubmit=async e=>{e.preventDefault();TOKEN=$('#tok').value.trim();localStorage.setItem('clipx_token',TOKEN);await boot()};
-$('#logout').onclick=e=>{e.preventDefault();localStorage.removeItem('clipx_token');TOKEN='';showLogin()};
+$('#logout').innerHTML=ic('logout')+'Sign out';
+$('#logout').onclick=()=>{localStorage.removeItem('clipx_token');TOKEN='';showLogin()};
+$('.menu').innerHTML=ic('menu');
+$('#nav').innerHTML=PAGES.map(([p,n])=>`<a href="#${p}" data-p="${p}">${ic(p)}<span>${n}</span></a>`).join('');
+$('#nav').onclick=()=>$('#side').classList.remove('open');
 
-const num=n=>n>=1e9?(n/1e9).toFixed(1)+'b':n>=1e6?(n/1e6).toFixed(1)+'m':n>=1e4?(n/1e3).toFixed(0)+'k':n>=1e3?(n/1e3).toFixed(1)+'k':String(n||0);
+const num=n=>n>=1e9?(n/1e9).toFixed(1)+'B':n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e4?(n/1e3).toFixed(0)+'K':n>=1e3?(n/1e3).toFixed(1)+'K':String(n||0);
 function dur(s){s=Math.max(0,Math.round(s));if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m';return Math.floor(s/86400)+'d '+Math.floor(s%86400/3600)+'h'}
 const ago=t=>t?dur(S.now-t)+' ago':'never';
-const base=()=>S.tunnel.connected&&S.tunnel.public_url?S.tunnel.public_url.replace(/\/$/,''):S.local_url;
-// A JS literal that is safe inside an HTML attribute: JSON-quote it, then HTML-escape it.
-const js=v=>esc(JSON.stringify(v));
-function copyBtn(text){return `<button onclick="navigator.clipboard.writeText(${js(text)});toast('copied')">copy</button>`}
-function snippet(text){return `<pre>${esc(text)}${copyBtn(text)}</pre>`}
+const loopback=['127.0.0.1','localhost','[::1]','::1'].includes(location.hostname);
+// The address tools should use: the tunnel when it is up, else the address this page came from.
+const base=()=>S.tunnel.connected&&S.tunnel.public_url?S.tunnel.public_url.replace(/\/$/,''):loopback?S.local_url:location.origin+location.pathname.replace(/\/[^/]*$/,'');
 
+// ---- components
+const btn=(label,onclick,cls='',icon='')=>`<button class="btn ${cls}" onclick="${onclick}">${icon?ic(icon):''}${label}</button>`;
+const copyBtn=(text,cls='ghost icon xs')=>`<button class="btn ${cls}" title="Copy" onclick="copy(${js(text)})">${ic('copy')}</button>`;
+const code=text=>`<div class="code"><pre>${esc(text)}</pre>${copyBtn(text)}</div>`;
+const badge=(t,tone='')=>`<span class="badge ${tone}">${esc(t)}</span>`;
+const sw=(on,onclick,title='')=>`<button class="sw ${on?'on':''}" role="switch" aria-checked="${on}" title="${esc(title)}" onclick="${onclick}"></button>`;
+const sec=(title,body,acts='')=>`<section class="sec"><div class="sec-h"><h2>${title}</h2><div class="acts">${acts}</div></div><div class="group">${body}</div></section>`;
+const row=(title,desc,control='',extra='')=>`<div class="row"><div class="row-in"><div><div class="row-t">${title}</div>${desc?`<p class="row-d">${desc}</p>`:''}</div>${control?`<div class="row-c">${control}</div>`:'<div></div>'}</div>${extra?`<div class="row-x">${extra}</div>`:''}</div>`;
+const urlCtl=u=>`<span class="url"><span class="mono">${esc(u)}</span>${copyBtn(u)}</span>`;
+function copy(t){navigator.clipboard.writeText(t).then(()=>toast('Copied'),()=>toast('Copy failed',1))}
+const STATUS={ready:['Ready','ok'],cooling:['Cooling down','warn'],'needs-login':['Needs login','bad'],disabled:['Off','']};
+
+function dialog(html){$('#dlg').innerHTML=`<div class="overlay" onmousedown="if(event.target===this)closeDialog()"><div class="dlg" role="dialog" aria-modal="true">${html}</div></div>`;const f=$('#dlg input,#dlg textarea');if(f)f.focus()}
+function closeDialog(){$('#dlg').innerHTML='';if(flow){flow=null}}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#dlg').innerHTML)closeDialog()});
+
+// ---- app
 async function boot(){
   try{S=await api('state')}catch(e){if(e.message!=='unauthorized')showLogin(e.message);return}
   $('#login').classList.add('hidden');$('#app').classList.remove('hidden');
@@ -120,165 +317,189 @@ async function boot(){
 }
 function route(){
   page=(location.hash.slice(1)||'overview').split('&')[0];
-  document.querySelectorAll('nav a[data-p]').forEach(a=>a.classList.toggle('on',a.dataset.p===page));
-  render();
+  if(!PAGES.some(([p])=>p===page))page='overview';
+  document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('on',a.dataset.p===page));
+  connMode=null;render();$('#scroll').scrollTop=0;
   if(page==='usage')loadUsage();
 }
 window.onhashchange=route;
-// Re-render only when something visible changed, so buttons are not swapped out under the cursor.
-const fingerprint=()=>JSON.stringify({...S,now:0,uptime:page==='overview'?S.uptime:0,rss:page==='overview'?Math.round(S.rss/1e5):0});
+// Re-render only when something visible changed, so controls are not swapped out under the cursor.
+const fingerprint=()=>JSON.stringify({...S,now:0,uptime:page==='overview'?Math.floor(S.uptime/60):0,rss:page==='overview'?Math.round(S.rss/1e5):0});
 async function refresh(){if(!TOKEN||document.hidden||$('#app').classList.contains('hidden'))return;try{S=await api('state');if(!busy()&&fingerprint()!==lastFp)render()}catch(e){}}
 setInterval(refresh,3000);
-const busy=()=>{const a=document.activeElement;return a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT')};
+const busy=()=>{const a=document.activeElement;return a&&['INPUT','TEXTAREA','SELECT'].includes(a.tagName)&&!a.closest('#dlg')};
+async function reload(){S=await api('state');render()}
 
 function render(){
-  $('#ver').textContent='v'+S.version+' · '+(S.rss/1048576).toFixed(1)+' mb';
   lastFp=fingerprint();
-  const m=$('#main');
-  m.innerHTML=({overview,accounts,keys,usage,connect,settings}[page]||overview)();
+  $('#ver').textContent='v'+S.version;
+  const t=S.tunnel,c=S.connect;
+  $('#conn').innerHTML=c.mode==='off'?`<i class="dot"></i><span>Local only</span>`:t.connected?`<i class="dot ok"></i><span title="${esc(t.public_url)}">${esc((t.public_url||'').replace(/^https?:\/\//,''))}</span>`:`<i class="dot warn"></i><span>Connecting…</span>`;
+  const [title,acts,body]=({overview,accounts,keys,usage,connect,settings}[page]||overview)();
+  $('#title').textContent=title;$('#actions').innerHTML=acts||'';$('#main').innerHTML=body;
 }
 
 function overview(){
-  const acc=S.accounts, ready=acc.filter(a=>a.status==='ready').length;
-  const b=base();
-  return `<h1>overview</h1><p class="sub">${S.tunnel.connected?'reachable at <a href="'+esc(S.tunnel.public_url)+'">'+esc(S.tunnel.public_url)+'</a>':'local only at '+esc(S.local_url)+' · <a href="#connect">turn on remote access</a>'}</p>
-  <div class="tiles">
-    <div class="tile"><b>${ready}/${acc.length}</b><span>accounts ready</span></div>
-    <div class="tile"><b>${num(S.total_requests)}</b><span>requests since start</span></div>
-    <div class="tile"><b class="${S.total_failures?'bad':''}">${num(S.total_failures)}</b><span>failed</span></div>
-    <div class="tile"><b>${S.in_flight}</b><span>in flight</span></div>
-    <div class="tile"><b>${(S.rss/1048576).toFixed(1)}</b><span>mb memory</span></div>
-    <div class="tile"><b>${dur(S.uptime)}</b><span>uptime</span></div>
-  </div>
-  ${acc.length?'':`<div class="card" style="margin-top:16px"><b>no accounts yet.</b> <a href="#accounts">add a claude or chatgpt account</a> to start.</div>`}
-  <h2>connect your tools</h2>
-  <div class="card">
-    <p class="mut" style="margin-top:0">use any clipx api key (<a href="#keys">create one</a>). pin a tool to one account with <code>${esc(b)}/a/&lt;label&gt;</code>, or a model with <code>model@label</code>.</p>
-    <label>claude code</label>${snippet(`export ANTHROPIC_BASE_URL=${b}\nexport ANTHROPIC_AUTH_TOKEN=<clipx key>`)}
-    <label>codex · ~/.codex/config.toml</label>${snippet(`model_provider = "clipx"\n\n[model_providers.clipx]\nname = "clipx"\nbase_url = "${b}/v1"\nenv_key = "CLIPX_API_KEY"\nwire_api = "responses"`)}
-    <label>openai-compatible apps (chat completions, claude-* and gpt-* models)</label>${snippet(`base url: ${b}/v1\napi key:  <clipx key>`)}
-  </div>
-  <h2>recent requests</h2>${reqTable(S.recent)}`;
+  const acc=S.accounts,ready=acc.filter(a=>a.status==='ready').length,b=base();
+  const stats=[[`${ready}/${acc.length}`,'Accounts ready'],[num(S.total_requests),'Requests since start'],[num(S.total_failures),'Failed',S.total_failures?'bad':''],[S.in_flight,'In flight'],[(S.rss/1048576).toFixed(1)+' MB','Memory'],[dur(S.uptime),'Uptime']];
+  const ccEnv=`export ANTHROPIC_BASE_URL=${b}\nexport ANTHROPIC_AUTH_TOKEN=<clipx key>`;
+  const codex=`model_provider = "clipx"\n\n[model_providers.clipx]\nname = "clipx"\nbase_url = "${b}/v1"\nenv_key = "CLIPX_API_KEY"\nwire_api = "responses"`;
+  return ['Overview','',`
+  ${sec('Status',`<div class="stats">${stats.map(([v,l,c])=>`<div class="stat"><b class="${c||''}">${esc(v)}</b><span>${l}</span></div>`).join('')}</div>`)}
+  ${acc.length?'':sec('Get started',row('Add your first account','Sign in with a Claude or ChatGPT subscription. clipx keeps the login fresh and rotates between accounts.',btn('Add account','addAccount()','pri','plus')))}
+  ${sec('Connect your tools',`
+    ${row('Base URL',`Use it with any <a class="link" href="#keys">API key</a>. Add <code>/a/&lt;label&gt;</code> to pin a tool to one account.`,urlCtl(b))}
+    ${row('Claude Code','Set these in your shell, then run <code>claude</code>.','',code(ccEnv))}
+    ${row('Codex','Add this to <code>~/.codex/config.toml</code> and export <code>CLIPX_API_KEY</code>.','',code(codex))}
+    ${row('OpenAI-compatible apps','Chat Completions with <code>claude-*</code> and <code>gpt-*</code> models.','',code(`base url: ${b}/v1\napi key:  <clipx key>`))}`)}
+  ${sec('Recent requests',reqTable(S.recent))}`];
 }
 
 function reqTable(list){
-  if(!list||!list.length)return '<p class="mut">nothing yet.</p>';
-  return `<div class="card" style="padding:0;overflow:auto"><table><tr><th>when</th><th>account</th><th>model</th><th>path</th><th class="n">status</th><th class="n">in</th><th class="n">out</th><th class="n">ms</th></tr>
-  ${list.map(r=>`<tr title="${esc(r.error||'')}"><td>${ago(r.ts)}</td><td>${esc(r.account)}</td><td class="mono">${esc(r.model)}</td><td class="mono mut">${esc(r.path)}</td><td class="n ${r.status>=400||r.error?'bad':''}">${r.error&&r.status<400?'err':r.status}</td><td class="n">${num(r.input)}</td><td class="n">${num(r.output)}</td><td class="n">${r.ms}</td></tr>`).join('')}</table></div>`;
+  if(!list||!list.length)return '<div class="empty">No requests yet.</div>';
+  return `<div class="tblw"><table class="tbl"><tr><th>When</th><th>Account</th><th>Model</th><th>Path</th><th class="n">Status</th><th class="n">In</th><th class="n">Out</th><th class="n">Time</th></tr>
+  ${list.map(r=>`<tr title="${esc(r.error||'')}"><td class="mut">${ago(r.ts)}</td><td>${esc(r.account)}</td><td class="mono">${esc(r.model)}</td><td class="mono mut">${esc(r.path)}</td><td class="n ${r.status>=400||r.error?'bad':''}">${r.error&&r.status<400?'error':r.status}</td><td class="n">${num(r.input)}</td><td class="n">${num(r.output)}</td><td class="n mut">${r.ms<1000?r.ms+' ms':(r.ms/1000).toFixed(1)+' s'}</td></tr>`).join('')}</table></div>`;
 }
 
 function quota(a){
-  if(!a.quota||!a.quota.length)return a.provider==='claude'||a.provider==='codex'?'<div class="mut" style="font-size:12px;margin-top:6px">quota shows after the first request</div>':'';
-  return a.quota.map(q=>`<div class="q"><span class="mono">${esc(q.name)}</span><div class="bar"><i class="${q.used_pct>=90?'hi':''}" style="width:${q.used_pct}%"></i></div><span class="mono mut">${q.used_pct.toFixed(0)}%${q.resets_at?' · '+dur(q.resets_at-S.now):''}</span></div>`).join('');
+  if(!a.quota||!a.quota.length)return `<div class="row-d" style="margin-top:8px">Usage limits show after the first request.</div>`;
+  return a.quota.map(q=>`<div class="quota"><span class="mono">${esc(q.name)}</span><div class="bar"><i class="${q.used_pct>=90?'bad':q.used_pct>=70?'warn':''}" style="width:${q.used_pct}%"></i></div><span class="mut">${q.used_pct.toFixed(0)}% used${q.resets_at?' · resets in '+dur(q.resets_at-S.now):''}</span></div>`).join('');
 }
 
 function accounts(){
-  const list=S.accounts.map(a=>{
-    let st=a.status; if(st==='cooling')st+=' '+dur(a.cooldown_until-S.now);
-    return `<div class="card"><div class="row">
-      <b class="mono">${esc(a.label)}</b><span class="pill ${a.status}">${esc(st)}</span><span class="mut">${esc(a.provider)}${a.plan?' · '+esc(a.plan):''}${a.email?' · '+esc(a.email):''}</span><span class="grow"></span>
-      <span class="mut mono" style="font-size:12px">${num(a.requests)} req · ${num(a.input_tokens)} in · ${num(a.output_tokens)} out</span></div>
-      ${quota(a)}
-      ${a.last_error?`<div class="err">${esc(a.last_error)}</div>`:''}
-      <div class="row" style="margin-top:10px">
-        <button onclick="patchAcc(${js(a.id)},{disabled:${!a.disabled}})">${a.disabled?'enable':'disable'}</button>
-        ${a.status==='cooling'||a.status==='needs-login'||a.last_error?`<button onclick="patchAcc(${js(a.id)},{reset:true})">clear error</button>`:''}
-        <button onclick="refreshAcc(${js(a.id)})" ${a.no_refresh?'disabled title="refresh off for this account"':''}>refresh token</button>
-        <button onclick="renameAcc(${js(a.id)},${js(a.label)})">rename</button>
-        <span class="mut" style="font-size:12px">priority</span>
-        <button onclick="patchAcc(${js(a.id)},{priority:${a.priority-1}})">−</button><span class="mono">${a.priority}</span><button onclick="patchAcc(${js(a.id)},{priority:${a.priority+1}})">+</button>
-        <span class="grow"></span>
-        ${a.status==='needs-login'?`<button class="pri" onclick="startLogin(${js(a.provider)})">log in again</button>`:''}
-        <button class="danger" onclick="delAcc(${js(a.id)},${js(a.label)})">remove</button>
-      </div>
-      <div class="mut" style="font-size:12px;margin-top:6px">token ${a.expires_at?(a.expires_at>S.now?'expires in '+dur(a.expires_at-S.now):'expired'):'expiry unknown'} · refreshed ${ago(a.last_refresh)}${a.no_refresh?' · refresh off':''} · used ${ago(a.last_used)}</div>
-    </div>`}).join('');
-  return `<h1>accounts</h1><p class="sub">subscription logins clipx rotates between. ${S.strategy==='round-robin'?'round-robin: spreads requests over the highest-priority accounts.':'fill-first: uses the highest-priority account until it hits a limit.'}</p>
-  <div class="row"><button class="pri" onclick="startLogin('claude')">add claude account</button><button class="pri" onclick="startLogin('codex')">add chatgpt / codex account</button><button onclick="toggleImport()">import json</button></div>
-  ${flow?flowBox():''}
-  <div id="imp" class="flow ${importOpen?'':'hidden'}"><b>import</b><p class="mut" style="margin:4px 0">paste a CLIProxyAPI auth file (claude-*.json, codex-*.json) or a clipx account file. an array works too.</p>
-    <textarea id="impjson" placeholder='{"type":"claude","access_token":"…","refresh_token":"…"}'></textarea>
-    <label><input type="checkbox" id="impnr" style="width:auto"> do not refresh these tokens (another tool still owns them)</label>
-    <p></p><button class="pri" onclick="doImport()">import</button></div>
-  <h2>${S.accounts.length} account${S.accounts.length===1?'':'s'}</h2>${list||'<p class="mut">none yet.</p>'}`;
+  const order=S.providers||['claude','codex'];
+  const groups=order.map(p=>[p,S.accounts.filter(a=>a.provider===p)]).filter(([,l])=>l.length);
+  const card=a=>{
+    const [st,tone]=STATUS[a.status]||[a.status,''];
+    const stTxt=a.status==='cooling'?st+' · '+dur(a.cooldown_until-S.now):st;
+    const who=[a.email,a.org&&a.org!==a.email?a.org:'',a.linked?'linked to '+a.linked.split('/').pop():''].filter(Boolean).map(esc).join(' · ');
+    const tok=a.linked?`token from ${esc(a.linked)}`:a.expires_at?(a.expires_at>S.now?'token expires in '+dur(a.expires_at-S.now):'token expired'):'token expiry unknown';
+    return `<div class="acct"><div class="acct-h"><span class="pico">${prov(a.provider).icon}</span>
+      <div class="acct-n"><div class="row-t">${esc(a.label)}${badge(stTxt,tone)}${a.plan?badge(a.plan,'info'):''}</div><div class="row-d" title="${who}">${who||'&nbsp;'}</div></div>
+      ${sw(!a.disabled,`patchAcc(${js(a.id)},{disabled:${!a.disabled}})`,a.disabled?'Turn on':'Turn off')}</div>
+      <div class="acct-b">${quota(a)}${a.last_error?`<div class="err">${esc(a.last_error)}</div>`:''}
+      <div class="acct-f"><span class="meta">${num(a.requests)} requests · ${num(a.input_tokens)} in · ${num(a.output_tokens)} out · ${tok} · used ${ago(a.last_used)}</span>
+        ${a.status==='needs-login'?btn('Log in again',`startLogin(${js(a.provider)})`,'pri xs'):''}
+        ${a.status==='cooling'||a.status==='needs-login'||a.last_error?btn('Clear error',`patchAcc(${js(a.id)},{reset:true})`,'ghost xs'):''}
+        <span class="prio" title="Higher priority accounts are used first">Priority<button class="btn ghost icon xs" onclick="patchAcc(${js(a.id)},{priority:${a.priority-1}})">${ic('down')}</button><b>${a.priority}</b><button class="btn ghost icon xs" onclick="patchAcc(${js(a.id)},{priority:${a.priority+1}})">${ic('up')}</button></span>
+        <button class="btn ghost icon xs" title="${a.linked?'Reload token from the linked file':'Refresh token'}" onclick="refreshAcc(${js(a.id)})" ${a.no_refresh&&!a.linked?'disabled':''}>${ic('refresh')}</button>
+        <button class="btn ghost icon xs" title="Rename" onclick="renameAcc(${js(a.id)},${js(a.label)})">${ic('pencil')}</button>
+        <button class="btn ghost icon xs danger" title="Remove" onclick="delAcc(${js(a.id)},${js(a.label)})">${ic('trash')}</button>
+      </div></div></div>`};
+  const how=S.strategy==='round-robin'?'Requests rotate across the highest-priority accounts that are ready.':'Requests use the highest-priority account until it hits a limit.';
+  return ['Accounts',btn('Import','importDialog()','xs','upload')+btn('Add account','addAccount()','pri xs','plus'),
+    (groups.length?groups.map(([p,l])=>sec(prov(p).name,l.map(card).join(''),`<span class="mut" style="font-size:12px">${l.filter(a=>a.status==='ready').length} of ${l.length} ready</span>`)).join(''):sec('Accounts',row('No accounts yet','Sign in with a subscription, or import auth files from CLIProxyAPI.',btn('Add account','addAccount()','pri','plus'))))
+    +`<div class="note">${ic('info')}<span>${how} Change this in <a class="link" href="#settings">Settings</a>.</span></div>`];
 }
-function flowBox(){
-  return `<div class="flow"><b>add ${esc(flow.provider)} account</b>
-   <p style="margin:6px 0">1. <a class="btn pri" href="${esc(flow.url)}" target="_blank" rel="noopener">open sign-in page</a></p>
-   <p class="mut" style="margin:6px 0">2. ${esc(flow.hint)}</p>
-   <input id="cb" placeholder="${flow.provider==='claude'?'code#state':'http://localhost:1455/auth/callback?code=…'}">
-   <p></p><div class="row"><button class="pri" onclick="completeLogin()">add account</button><button onclick="flow=null;render()">cancel</button></div><div id="flowerr" class="err"></div></div>`;
+function addAccount(){
+  const ps=S.providers||['claude','codex'];
+  dialog(`<div class="dlg-h"><h3>Add an account</h3><p>Pick the subscription to sign in with.</p></div>
+  <div class="dlg-b"><div class="pick">${ps.map(p=>`<button onclick="startLogin(${js(p)})"><span class="pico">${prov(p).icon}</span><span>${prov(p).name}<small>${prov(p).sub}</small></span></button>`).join('')}</div></div>
+  <div class="dlg-f">${btn('Cancel','closeDialog()','ghost')}</div>`);
 }
-async function startLogin(p){try{const r=await api('login/start',{method:'POST',body:{provider:p}});flow={...r,provider:p};location.hash='accounts';render();pollFlow()}catch(e){toast(e.message)}}
-async function pollFlow(){const id=flow&&flow.flow_id;while(flow&&flow.flow_id===id){await new Promise(r=>setTimeout(r,2000));if(!flow||flow.flow_id!==id)return;try{const s=await api('login/status/'+id);if(s.done){flow=null;S=await api('state');render();toast('account added');return}}catch(e){return}}}
-async function completeLogin(){const v=$('#cb').value.trim();if(!v)return;try{const r=await api('login/complete',{method:'POST',body:{flow_id:flow.flow_id,callback:v}});flow=null;S=await api('state');render();toast('added '+r.account.label)}catch(e){$('#flowerr').textContent=e.message}}
-function toggleImport(){importOpen=!importOpen;$('#imp').classList.toggle('hidden',!importOpen)}
-async function doImport(){let j;try{j=JSON.parse($('#impjson').value)}catch(e){return toast('not valid json')}
-  if($('#impnr').checked){(Array.isArray(j)?j:[j]).forEach(x=>x.no_refresh=true)}
-  try{const r=await api('accounts/import',{method:'POST',body:j});importOpen=false;S=await api('state');render();toast('imported '+r.accounts.length)}catch(e){toast(e.message)}}
-async function patchAcc(id,body){try{await api('accounts/'+id,{method:'PATCH',body});S=await api('state');render()}catch(e){toast(e.message)}}
-async function refreshAcc(id){toast('refreshing…');try{await api('accounts/'+id+'/refresh',{method:'POST'});S=await api('state');render();toast('token refreshed')}catch(e){toast(e.message)}}
-async function renameAcc(id,cur){const l=prompt('new label (no spaces)',cur);if(l&&l!==cur)patchAcc(id,{label:l})}
-async function delAcc(id,label){if(!confirm('remove '+label+'? its tokens are deleted from this box.'))return;try{await api('accounts/'+id,{method:'DELETE'});S=await api('state');render()}catch(e){toast(e.message)}}
+async function startLogin(p){
+  try{const r=await api('login/start',{method:'POST',body:{provider:p}});flow={...r,provider:p};if(page!=='accounts')location.hash='accounts';flowDialog();pollFlow()}catch(e){toast(e.message,1)}
+}
+function flowDialog(){
+  const p=prov(flow.provider);
+  dialog(`<div class="dlg-h"><h3>Add a ${p.name} account</h3><p>${p.sub}.</p></div>
+  <div class="dlg-b">
+    <div class="step"><i>1</i><div>Open the sign-in page and approve access.<div style="margin-top:8px"><a class="btn pri" href="${esc(flow.url)}" target="_blank" rel="noopener">${ic('external')}Open sign-in page</a></div></div></div>
+    <div class="step"><i>2</i><div style="flex:1;min-width:0">${esc(flow.hint)}<div style="margin-top:8px"><input id="cb" placeholder="${flow.provider==='claude'?'code#state':'http://localhost:…/callback?code=…'}" onkeydown="if(event.key==='Enter')completeLogin()"></div><div id="flowerr" class="err"></div></div></div>
+  </div>
+  <div class="dlg-f">${btn('Cancel','closeDialog()','ghost')}${btn('Add account','completeLogin()','pri')}</div>`);
+}
+async function pollFlow(){const id=flow&&flow.flow_id;while(flow&&flow.flow_id===id){await new Promise(r=>setTimeout(r,2000));if(!flow||flow.flow_id!==id)return;try{const s=await api('login/status/'+id);if(s.done){flow=null;closeDialog();await reload();toast('Account added');return}}catch(e){return}}}
+async function completeLogin(){const v=$('#cb').value.trim();if(!v)return;try{const r=await api('login/complete',{method:'POST',body:{flow_id:flow.flow_id,callback:v}});flow=null;closeDialog();await reload();toast('Added '+r.account.label)}catch(e){$('#flowerr').textContent=e.message}}
+function importDialog(){
+  dialog(`<div class="dlg-h"><h3>Import accounts</h3><p>Paste a CLIProxyAPI auth file (claude-*.json, codex-*.json) or a clipx account file. An array works too.</p></div>
+  <div class="dlg-b"><textarea id="impjson" placeholder='{"type":"claude","access_token":"…","refresh_token":"…"}'></textarea>
+  <div class="row-in" style="gap:16px"><div><div class="row-t" style="font-size:13px">Don't refresh these tokens</div><p class="row-d">Turn on while another tool still owns the login. Two tools refreshing one login log each other out. On the box, <code>clipx import --link</code> also follows the file for new tokens.</p></div><button class="sw" id="impnr" role="switch" onclick="this.classList.toggle('on')"></button></div></div>
+  <div class="dlg-f">${btn('Cancel','closeDialog()','ghost')}${btn('Import','doImport()','pri')}</div>`);
+}
+async function doImport(){let j;try{j=JSON.parse($('#impjson').value)}catch(e){return toast('That is not valid JSON',1)}
+  if($('#impnr').classList.contains('on')){(Array.isArray(j)?j:[j]).forEach(x=>x.no_refresh=true)}
+  try{const r=await api('accounts/import',{method:'POST',body:j});closeDialog();await reload();toast('Imported '+r.accounts.length)}catch(e){toast(e.message,1)}}
+async function patchAcc(id,body){try{await api('accounts/'+id,{method:'PATCH',body});await reload()}catch(e){toast(e.message,1)}}
+async function refreshAcc(id){try{await api('accounts/'+id+'/refresh',{method:'POST'});await reload();toast('Token refreshed')}catch(e){toast(e.message,1)}}
+function renameAcc(id,cur){
+  dialog(`<div class="dlg-h"><h3>Rename account</h3><p>Labels show up in <code>/a/&lt;label&gt;</code> and <code>model@label</code>. Letters, digits, dot, dash and underscore.</p></div>
+  <div class="dlg-b"><input id="newlabel" value="${esc(cur)}" onkeydown="if(event.key==='Enter')doRename(${js(id)})"><div id="renerr" class="err"></div></div>
+  <div class="dlg-f">${btn('Cancel','closeDialog()','ghost')}${btn('Save',`doRename(${js(id)})`,'pri')}</div>`);
+}
+async function doRename(id){const l=$('#newlabel').value.trim();try{await api('accounts/'+id,{method:'PATCH',body:{label:l}});closeDialog();await reload()}catch(e){$('#renerr').textContent=e.message}}
+function confirmDialog(title,text,label,action){
+  dialog(`<div class="dlg-h"><h3>${esc(title)}</h3><p>${esc(text)}</p></div><div class="dlg-f">${btn('Cancel','closeDialog()','ghost')}<button class="btn danger" id="confirmok">${esc(label)}</button></div>`);
+  $('#confirmok').onclick=async()=>{closeDialog();await action()};
+}
+function delAcc(id,label){confirmDialog('Remove '+label+'?','Its tokens are deleted from this box. Tools pinned to it stop working.','Remove',async()=>{try{await api('accounts/'+id,{method:'DELETE'});await reload()}catch(e){toast(e.message,1)}})}
 
 function keys(){
-  return `<h1>api keys</h1><p class="sub">tools send one of these as their api key. clipx keeps only a hash, so a key is shown once.</p>
-  <div class="row" style="max-width:520px"><input id="kname" placeholder="name, e.g. laptop"><button class="pri" onclick="mkKey()">create key</button></div>
-  ${newKey?`<div class="flow"><b>${esc(newKey.name)}</b>: copy it now, it will not be shown again.${snippet(newKey.key)}<button onclick="newKey=null;render()">done</button></div>`:''}
-  <h2>${S.keys.length} key${S.keys.length===1?'':'s'}</h2>
-  <div class="card" style="padding:0"><table><tr><th>name</th><th>key</th><th>created</th><th>last used</th><th></th></tr>
-  ${S.keys.map(k=>`<tr><td>${esc(k.name)}</td><td class="mono">${esc(k.prefix)}…</td><td>${ago(k.created_at)}</td><td>${ago(k.last_used)}</td><td class="n"><button class="danger" onclick="rmKey(${js(k.id)},${js(k.name)})">revoke</button></td></tr>`).join('')}</table></div>`;
+  return ['API keys','',`
+  ${sec('New key',row('Create a key','Tools send it as their API key. clipx keeps only a hash, so you see the key once.',`<div class="inline"><input id="kname" placeholder="Name, e.g. laptop" style="width:200px" onkeydown="if(event.key==='Enter')mkKey()">${btn('Create','mkKey()','pri')}</div>`))}
+  ${sec(`${S.keys.length} key${S.keys.length===1?'':'s'}`,S.keys.length?S.keys.map(k=>row(`${esc(k.name)}<span class="mono mut" style="font-weight:400">${esc(k.prefix)}…</span>`,`Created ${ago(k.created_at)} · last used ${ago(k.last_used)}`,btn('Revoke',`rmKey(${js(k.id)},${js(k.name)})`,'danger xs'))).join(''):'<div class="empty">No keys. Tools need one to connect.</div>')}`];
 }
-async function mkKey(){try{newKey=await api('keys',{method:'POST',body:{name:$('#kname').value}});S=await api('state');render()}catch(e){toast(e.message)}}
-async function rmKey(id,n){if(!confirm('revoke '+n+'? tools using it stop working.'))return;try{await api('keys/'+id,{method:'DELETE'});S=await api('state');render()}catch(e){toast(e.message)}}
+async function mkKey(){try{const k=await api('keys',{method:'POST',body:{name:$('#kname').value}});await reload();
+  dialog(`<div class="dlg-h"><h3>Key created</h3><p>Copy it now. clipx won't show it again.</p></div><div class="dlg-b">${code(k.key)}</div><div class="dlg-f">${btn('Done','closeDialog()','pri')}</div>`)}catch(e){toast(e.message,1)}}
+function rmKey(id,n){confirmDialog('Revoke '+n+'?','Tools using this key stop working right away.','Revoke',async()=>{try{await api('keys/'+id,{method:'DELETE'});await reload()}catch(e){toast(e.message,1)}})}
 
 async function loadUsage(){try{[usageData,reqs]=await Promise.all([api('usage?days='+usageDays),api('requests?limit=100')]);if(page==='usage')render()}catch(e){}}
 function usage(){
+  const seg=`<div class="seg">${[1,7,30,90].map(n=>`<button class="${n===usageDays?'on':''}" onclick="usageDays=${n};loadUsage()">${n===1?'Today':n+' days'}</button>`).join('')}</div>`;
   const d=usageData;
-  const tabs=[1,7,30,90].map(n=>`<button class="${n===usageDays?'on':''}" onclick="usageDays=${n};loadUsage()">${n===1?'today':n+' days'}</button>`).join('');
-  if(!d)return `<h1>usage</h1><p class="mut">loading…</p>`;
-  const days=Object.entries(d.by_day), max=Math.max(1,...days.map(([,t])=>t.input+t.output));
-  const tbl=(title,obj)=>{const rows=Object.entries(obj).sort((a,b)=>b[1].requests-a[1].requests);return `<h2>${title}</h2><div class="card" style="padding:0;overflow:auto"><table><tr><th>${title.split(' ')[1]}</th><th class="n">requests</th><th class="n">failed</th><th class="n">input</th><th class="n">cached</th><th class="n">output</th></tr>${rows.map(([k,t])=>`<tr><td class="mono">${esc(k)}</td><td class="n">${num(t.requests)}</td><td class="n">${num(t.failures)}</td><td class="n">${num(t.input)}</td><td class="n">${num(t.cache_read)}</td><td class="n">${num(t.output)}</td></tr>`).join('')||'<tr><td class="mut">nothing yet</td></tr>'}</table></div>`};
-  return `<h1>usage</h1><p class="sub">what clipx saw pass through, kept for 90 days. not a bill.</p>
-  <div class="tabs">${tabs}</div>
-  <div class="card"><div class="mut" style="font-size:12px">tokens per day</div><div class="chart">${days.map(([day,t])=>`<div style="height:${Math.max(1,(t.input+t.output)/max*100)}%" data-t="${day}: ${num(t.input)} in, ${num(t.output)} out, ${t.requests} req"></div>`).join('')||'<span class="mut">nothing yet</span>'}</div></div>
-  ${tbl('by account',d.by_account)}${tbl('by model',d.by_model)}
-  <h2>last requests</h2>${reqTable(reqs)}`;
+  if(!d)return ['Usage',seg,'<div class="empty">Loading…</div>'];
+  const days=Object.entries(d.by_day),max=Math.max(1,...days.map(([,t])=>t.input+t.output));
+  const tot=days.reduce((a,[,t])=>({r:a.r+t.requests,i:a.i+t.input,o:a.o+t.output}),{r:0,i:0,o:0});
+  const tbl=(head,obj)=>{const rows=Object.entries(obj).sort((a,b)=>b[1].requests-a[1].requests);return rows.length?`<div class="tblw"><table class="tbl"><tr><th>${head}</th><th class="n">Requests</th><th class="n">Failed</th><th class="n">Input</th><th class="n">Cached</th><th class="n">Output</th></tr>${rows.map(([k,t])=>`<tr><td class="mono">${esc(k)}</td><td class="n">${num(t.requests)}</td><td class="n ${t.failures?'bad':''}">${num(t.failures)}</td><td class="n">${num(t.input)}</td><td class="n">${num(t.cache_read)}</td><td class="n">${num(t.output)}</td></tr>`).join('')}</table></div>`:'<div class="empty">Nothing yet.</div>'};
+  return ['Usage',seg,`
+  ${sec('Tokens per day',`<div class="stats"><div class="stat"><b>${num(tot.r)}</b><span>Requests</span></div><div class="stat"><b>${num(tot.i)}</b><span>Input tokens</span></div><div class="stat"><b>${num(tot.o)}</b><span>Output tokens</span></div></div><div class="chart" style="border-top:1px solid var(--border)">${days.map(([day,t])=>`<div style="height:${Math.max(1.5,(t.input+t.output)/max*100)}%" data-t="${day}: ${num(t.input)} in, ${num(t.output)} out, ${t.requests} requests"></div>`).join('')||'<span class="mut">Nothing yet.</span>'}</div>`)}
+  ${sec('By account',tbl('Account',d.by_account))}
+  ${sec('By model',tbl('Model',d.by_model))}
+  ${sec('Last requests',reqTable(reqs))}
+  <div class="note">${ic('info')}<span>What clipx saw pass through, kept for 90 days. It is not a bill.</span></div>`];
 }
 
+const MODES=[
+  ['tailscale','Tailscale','A fixed https address on your tailnet. Funnel makes it reachable from the internet.'],
+  ['cloudflare','Cloudflare quick tunnel','No account or server needed. The address changes when clipx restarts.'],
+  ['relay','clipx relay','A fixed address from a relay you run with <code>clipx relay</code> on any small server.'],
+  ['off','Off','Only this machine can reach clipx.'],
+];
 function connect(){
-  const t=S.tunnel,c=S.connect;
-  const st=c.mode==='off'?'<span class="pill disabled">off</span>':t.connected?'<span class="pill ready">connected</span>':'<span class="pill cooling">connecting</span>';
-  return `<h1>remote access</h1><p class="sub">reach this box over https from anywhere, without opening ports.</p>
-  <div class="card"><div class="row">${st}<span class="grow">${t.connected?'<a class="mono" href="'+esc(t.public_url)+'">'+esc(t.public_url)+'</a>':''}</span></div>
-  ${t.error&&!t.connected?`<div class="err">${esc(t.error)}</div>`:''}
-  ${S.via_tunnel?'<p class="mut" style="font-size:12px">you are viewing this page through the tunnel.</p>':''}</div>
-  <h2>mode</h2>
-  <div class="card">
-   <label><input type="radio" name="mode" value="cloudflare" style="width:auto" ${c.mode==='cloudflare'?'checked':''}> cloudflare quick tunnel: no account, no server. the url changes when clipx restarts.</label>
-   <label><input type="radio" name="mode" value="relay" style="width:auto" ${c.mode==='relay'?'checked':''}> clipx relay: a stable url from a relay you run (<code>clipx relay</code> on any small server).</label>
-   <label><input type="radio" name="mode" value="off" style="width:auto" ${c.mode==='off'?'checked':''}> off: local only.</label>
-   <div id="relayf"><label>relay url</label><input id="rurl" value="${esc(c.relay||'')}" placeholder="https://relay.example.com">
-   <label>name on the relay</label><input id="rname" value="${esc(c.name||'')}" placeholder="my-box">
-   <label>relay secret (only if the relay asks for one)</label><input id="rsec" type="password"></div>
-   <p></p><button class="pri" onclick="saveConnect()">save</button>
-  </div>`;
+  const t=S.tunnel,c=S.connect,m=connMode||c.mode;
+  const st=c.mode==='off'?badge('Off'):t.connected?badge('Connected','ok'):badge('Connecting','warn');
+  const fields=m==='tailscale'?`
+    ${row('HTTPS port','Funnel works on 443, 8443 and 10000. clipx takes <code>/</code> on that port and leaves other paths alone.',`<select id="tsport" style="width:110px">${[443,8443,10000].map(p=>`<option ${p===c.ts_port?'selected':''}>${p}</option>`).join('')}</select>`)}
+    ${row('Tailnet only','Keep the address on your own devices instead of the internet.',sw(c.tailnet_only,"this.classList.toggle('on')").replace('class="sw','id="tsonly" class="sw'))}`
+  :m==='relay'?`
+    ${row('Relay URL','',`<input id="rurl" value="${esc(c.relay||'')}" placeholder="https://relay.example.com" style="width:260px">`)}
+    ${row('Name','Your box shows up as <code>/t/&lt;name&gt;/</code> on the relay.',`<input id="rname" value="${esc(c.name||'')}" placeholder="my-box" style="width:260px">`)}
+    ${row('Relay secret','Only if the relay asks for one.',`<input id="rsec" type="password" style="width:260px">`)}`:'';
+  return ['Remote access','',`
+  ${sec('Status',row(st+(c.mode==='off'?'':` <span class="mut" style="font-weight:400">${esc(MODES.find(x=>x[0]===c.mode)?.[1]||c.mode)}</span>`),t.error&&!t.connected?`<span style="color:var(--efg)">${esc(t.error)}</span>`:S.via_tunnel?'You are viewing this page through the tunnel.':c.mode==='off'?'Only this machine can reach clipx.':'',t.connected&&t.public_url?urlCtl(t.public_url):''))}
+  ${sec('Mode',MODES.map(([k,n,d])=>`<div class="row radio ${m===k?'on':''}" onclick="connMode=${js(k)};render()"><span class="rad"></span><div><div class="row-t">${n}</div><p class="row-d">${d}</p></div></div>`).join('')+fields,
+    btn('Save','saveConnect()','pri xs'))}
+  <div class="note">${ic('info')}<span>The dashboard needs the admin token and the API needs a key, however you reach this box.</span></div>`];
 }
-async function saveConnect(){const mode=document.querySelector('input[name=mode]:checked').value;try{await api('connect',{method:'PATCH',body:{mode,relay:$('#rurl').value,name:$('#rname').value,relay_secret:$('#rsec').value}});toast('saved, connecting…');setTimeout(refresh,1500)}catch(e){toast(e.message)}}
+async function saveConnect(){
+  const mode=connMode||S.connect.mode,body={mode};
+  if(mode==='relay'){body.relay=$('#rurl').value;body.name=$('#rname').value;body.relay_secret=$('#rsec').value}
+  if(mode==='tailscale'){body.ts_port=+$('#tsport').value;body.tailnet_only=$('#tsonly').classList.contains('on')}
+  try{await api('connect',{method:'PATCH',body});connMode=null;toast(mode==='off'?'Remote access off':'Saved, connecting…');setTimeout(refresh,1500);setTimeout(refresh,5000)}catch(e){toast(e.message,1)}
+}
 
 function settings(){
-  return `<h1>settings</h1><p class="sub">changes apply right away.</p>
-  <div class="card" style="max-width:560px">
-   <label>routing</label><select id="strat"><option value="round-robin" ${S.strategy==='round-robin'?'selected':''}>round-robin: spread load across accounts</option><option value="fill-first" ${S.strategy==='fill-first'?'selected':''}>fill-first: use one account until it hits a limit</option></select>
-   <label>accounts to try per request before giving up</label><input id="retries" type="number" min="1" max="10" value="${S.retries}">
-   <p></p><button class="pri" onclick="saveSettings()">save</button>
-  </div>
-  <h2>about</h2><div class="card mut" style="max-width:560px;font-size:13px">
-   listening on <code>${esc(S.listen)}</code><br>
-   presents as claude code <code>${esc(S.claude_version)}</code> to anthropic for non-claude-code clients (raised automatically when a newer claude code passes through)<br>
-   admin token lives in <code>~/.clipx/config.toml</code></div>`;
+  return ['Settings','',`
+  ${sec('Routing',`
+    ${row('Strategy','How clipx picks an account for each request.',`<select id="strat" style="width:190px" onchange="saveSettings({strategy:this.value})"><option value="round-robin" ${S.strategy==='round-robin'?'selected':''}>Round-robin</option><option value="fill-first" ${S.strategy==='fill-first'?'selected':''}>Fill first</option></select>`)}
+    ${row('Accounts to try','How many accounts a request may try before clipx gives up.',`<input type="number" min="1" max="10" value="${S.retries}" style="width:80px" onchange="saveSettings({retries:+this.value})">`)}`)}
+  ${sec('About',`
+    ${row('Version',`clipx v${esc(S.version)}, using ${(S.rss/1048576).toFixed(1)} MB of memory.`)}
+    ${row('Listening on','Change it with <code>clipx setup --port</code> or <code>--public</code>.',`<span class="mono">${esc(S.listen)}</span>`)}
+    ${row('Claude Code version',"Presented to Anthropic for clients that aren't Claude Code. It goes up by itself when a newer Claude Code passes through.",`<span class="mono">${esc(S.claude_version)}</span>`)}
+    ${row('Admin token','Lives in <code>~/.clipx/config.toml</code> on the box.',btn('Sign out','$(\'#logout\').click()','xs','logout'))}`)}`];
 }
-async function saveSettings(){try{await api('settings',{method:'PATCH',body:{strategy:$('#strat').value,retries:+$('#retries').value}});S=await api('state');render();toast('saved')}catch(e){toast(e.message)}}
+async function saveSettings(body){try{await api('settings',{method:'PATCH',body});await reload();toast('Saved')}catch(e){toast(e.message,1)}}
 
 if(TOKEN)boot();else showLogin();
 </script>

@@ -69,8 +69,9 @@ fn err(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"error": msg}))).into_response()
 }
 
+/// True when the request came in through a tunnel or proxy rather than from this machine.
 fn tunnel_header(h: &HeaderMap) -> bool {
-    h.contains_key("x-clipx-tunnel")
+    ["x-clipx-tunnel", "cf-connecting-ip", "x-forwarded-for", "tailscale-funnel-request"].iter().any(|k| h.contains_key(*k))
 }
 
 async fn state(State(app): State<Arc<App>>, headers: HeaderMap) -> Json<Value> {
@@ -97,10 +98,11 @@ async fn state(State(app): State<Arc<App>>, headers: HeaderMap) -> Json<Value> {
         "strategy": cfg.strategy,
         "retries": cfg.retries,
         "claude_version": app.claude_version(),
+        "providers": crate::store::Provider::ALL,
         "accounts": app.store.list().iter().map(|a| a.summary()).collect::<Vec<_>>(),
         "keys": keys,
         "tunnel": tunnel,
-        "connect": {"mode": cfg.connect.mode, "relay": cfg.connect.relay, "name": cfg.connect.name},
+        "connect": {"mode": cfg.connect.mode, "relay": cfg.connect.relay, "name": cfg.connect.name, "ts_port": cfg.connect.ts_port.unwrap_or(443), "tailnet_only": cfg.connect.tailnet_only},
         "via_tunnel": tunnel_header(&headers),
         "recent": app.stats.recent(15),
     }))
@@ -164,6 +166,10 @@ async fn import(State(app): State<Arc<App>>, Json(v): Json<Value>) -> Response {
             return err(StatusCode::BAD_REQUEST, "unrecognised account json (expected a clipx or CLIProxyAPI auth file)");
         };
         file.no_refresh |= no_refresh;
+        if let Some(path) = item.get("linked").and_then(Value::as_str).filter(|p| !p.is_empty()) {
+            file.linked = Some(path.to_string());
+            file.no_refresh = true;
+        }
         match app.store.upsert(file) {
             Ok(acc) => added.push(acc.summary()),
             Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -278,6 +284,8 @@ struct ConnectReq {
     relay: Option<String>,
     name: Option<String>,
     relay_secret: Option<String>,
+    ts_port: Option<u16>,
+    tailnet_only: Option<bool>,
 }
 
 async fn connect(State(app): State<Arc<App>>, headers: HeaderMap, Json(r): Json<ConnectReq>) -> Response {
@@ -297,6 +305,12 @@ async fn connect(State(app): State<Arc<App>>, headers: HeaderMap, Json(r): Json<
         }
         if let Some(s) = r.relay_secret.filter(|s| !s.is_empty()) {
             cfg.connect.relay_secret = Some(s);
+        }
+        if let Some(p) = r.ts_port {
+            cfg.connect.ts_port = Some(p);
+        }
+        if let Some(t) = r.tailnet_only {
+            cfg.connect.tailnet_only = t;
         }
         cfg.connect.mode = r.mode;
     }

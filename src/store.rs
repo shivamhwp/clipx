@@ -14,6 +14,8 @@ pub enum Provider {
 }
 
 impl Provider {
+    pub const ALL: &[Provider] = &[Provider::Claude, Provider::Codex];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Provider::Claude => "claude",
@@ -61,6 +63,10 @@ pub struct AccountFile {
     /// Never refresh this token (useful when another tool owns the refresh token).
     #[serde(default)]
     pub no_refresh: bool,
+    /// Another tool's auth file (CLIProxyAPI format) that owns this login. clipx never
+    /// refreshes a linked account; it re-reads the file to pick up new tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<String>,
     #[serde(default)]
     pub created_at: u64,
     #[serde(default)]
@@ -151,6 +157,7 @@ impl Account {
             "disabled": f.disabled,
             "priority": f.priority,
             "no_refresh": f.no_refresh,
+            "linked": f.linked,
             "expires_at": f.expires_at,
             "last_refresh": f.last_refresh,
             "created_at": f.created_at,
@@ -303,6 +310,38 @@ impl Store {
         self.save_account(&acc).map_err(|e| e.to_string())
     }
 
+    /// Copy new tokens from a linked account's source file. Returns true when the token changed.
+    pub fn reload_linked(&self, acc: &Account) -> Result<bool, String> {
+        let (path, provider) = {
+            let f = acc.file.read().unwrap();
+            (f.linked.clone().ok_or("account is not linked")?, f.provider)
+        };
+        let v: Value = std::fs::read(&path)
+            .map_err(|e| format!("{path}: {e}"))
+            .and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("{path}: {e}")))?;
+        let src = from_cliproxy(&v).filter(|s| s.provider == provider).ok_or_else(|| format!("{path} is not a {} auth file", provider.as_str()))?;
+        {
+            let mut f = acc.file.write().unwrap();
+            if f.access_token == src.access_token {
+                return Ok(false);
+            }
+            f.access_token = src.access_token;
+            f.refresh_token = src.refresh_token;
+            f.id_token = src.id_token.or(f.id_token.take());
+            f.expires_at = src.expires_at;
+            f.last_refresh = if src.last_refresh > 0 { src.last_refresh } else { now() };
+            f.account_id = src.account_id.or(f.account_id.take());
+            f.plan = src.plan.or(f.plan.take());
+        }
+        {
+            let mut s = acc.state.lock().unwrap();
+            s.needs_login = false;
+            s.last_error = None;
+        }
+        self.save_account(acc).map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
     // ---- API keys ----
 
     pub fn save_keys(&self) -> std::io::Result<()> {
@@ -382,6 +421,7 @@ pub fn from_cliproxy(v: &Value) -> Option<AccountFile> {
         disabled: v.get("disabled").and_then(Value::as_bool).unwrap_or(false),
         priority: v.get("priority").and_then(Value::as_i64).unwrap_or(0) as i32,
         no_refresh: false,
+        linked: None,
         created_at: now(),
         last_refresh: s("last_refresh").and_then(|e| crate::util::parse_rfc3339(&e)).unwrap_or(0),
         device_id: device_id(),
@@ -421,6 +461,7 @@ pub fn new_account(provider: Provider, access_token: String) -> AccountFile {
         disabled: false,
         priority: 0,
         no_refresh: false,
+        linked: None,
         created_at: now(),
         last_refresh: now(),
         device_id: device_id(),
