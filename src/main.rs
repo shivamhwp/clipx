@@ -2,6 +2,7 @@ mod admin;
 mod app;
 mod cloak;
 mod config;
+mod gemini;
 mod oauth;
 mod proxy;
 mod service;
@@ -38,7 +39,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Add an account by logging in (claude or codex).
+    /// Add an account by logging in (claude, codex, or gemini).
     Login { provider: String },
     /// List accounts.
     Accounts,
@@ -180,6 +181,7 @@ fn client_runtime() -> tokio::runtime::Runtime {
 pub fn build_router(app: Arc<app::App>) -> Router {
     Router::new()
         .route("/v1/{*rest}", any(proxy::entry))
+        .route("/v1beta/{*rest}", any(proxy::entry))
         .route("/a/{*rest}", any(proxy::entry))
         .route("/responses", any(proxy::entry))
         .route("/responses/{*rest}", any(proxy::entry))
@@ -382,6 +384,10 @@ fn print_env(base: &str, key: &str) {
     println!("openai-compatible apps:");
     println!("  base url  {base}/v1");
     println!("  api key   {key}");
+    println!();
+    println!("gemini-compatible apps:");
+    println!("  base url  {base}/v1beta");
+    println!("  api key   {key}   (as x-goog-api-key, or ?key=)");
 }
 
 async fn run_client(home: &Path, cmd: Cmd) -> Res {

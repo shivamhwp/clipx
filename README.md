@@ -50,7 +50,9 @@ env_key = "CLIPX_API_KEY"
 wire_api = "responses"
 ```
 
-OpenAI-compatible apps: base URL `https://your-box-url/v1`, API key `sk-clipx-…`. `claude-*` models go to Claude accounts and `gpt-*` models go to ChatGPT accounts.
+OpenAI-compatible apps: base URL `https://your-box-url/v1`, API key `sk-clipx-…`. `claude-*` models go to Claude accounts, `gpt-*` models go to ChatGPT accounts, and `gemini-*` models go to Gemini accounts.
+
+Gemini-compatible apps (anything that speaks the native Gemini API): base URL `https://your-box-url/v1beta`, key as `x-goog-api-key: sk-clipx-…` or `?key=sk-clipx-…`.
 
 `clipx env` prints these with your current URL.
 
@@ -60,10 +62,11 @@ OpenAI-compatible apps: base URL `https://your-box-url/v1`, API key `sk-clipx-�
 |---|---|---|
 | `POST /v1/messages`, `/v1/messages/count_tokens` | Claude Code, Anthropic SDKs | Claude, or ChatGPT by model |
 | `POST /v1/responses` | Codex, OpenAI Responses SDKs | ChatGPT Codex backend |
-| `POST /v1/chat/completions` | OpenAI-compatible apps | Claude or ChatGPT, by model |
-| `GET /v1/models` | everything | live model lists from both |
+| `POST /v1/chat/completions` | OpenAI-compatible apps | Claude, ChatGPT or Gemini, by model |
+| `GET /v1/models` | everything | live model lists, Claude and ChatGPT; a fallback list for Gemini |
+| `POST /v1beta/models/{model}:generateContent`, `:streamGenerateContent`, `:countTokens` | Gemini-compatible apps | Gemini |
 
-Clients authenticate with a clipx key in `Authorization: Bearer`, `x-api-key`, or `api-key`.
+Clients authenticate with a clipx key in `Authorization: Bearer`, `x-api-key`, or `api-key`. Gemini clients can also use `x-goog-api-key` or `?key=`.
 
 ### Claude Code with GPT models
 
@@ -101,7 +104,11 @@ Both tools refreshing one login rotates the refresh token and logs the other one
 clipx import --link ~/.cli-proxy-api/claude-me@example.com.json
 ```
 
-A linked account never refreshes its own token. clipx re-reads the file every minute, and after any 401, so it always uses the token CLIProxyAPI last saved. `--no-refresh` copies the token once and never refreshes it, which only lasts until that token expires.
+A linked account never refreshes its own token. clipx re-reads the file every minute, and after any 401, so it always uses the token CLIProxyAPI last saved. `--no-refresh` copies the token once and never refreshes it, which only lasts until that token expires. Both work with CLIProxyAPI's gemini-cli auth files (`"type": "gemini"`) too.
+
+### Gemini accounts
+
+`clipx login gemini` signs in with a Google account the same way the official Gemini CLI does (Google OAuth for "Gemini Code Assist"), which works for free Google accounts and for Google AI Pro/Ultra subscriptions. After sign-in, clipx runs the same project setup the Gemini CLI does on first login and stores the resulting project id and tier with the account. Using a subscription login outside the official client may be against Google's terms; check them for your plan.
 
 ## Remote access
 
@@ -142,14 +149,14 @@ Open the URL setup printed (the `#token=` part signs you in; it never reaches th
 - remote access: switch between Tailscale, Cloudflare, a relay, or off
 - settings: routing strategy and retries
 
-Logging in on a remote box works without port forwarding. Claude's sign-in page shows a code to paste back. For ChatGPT, the final redirect to `localhost:1455` fails to load on your laptop; paste that page's URL into the dashboard.
+Logging in on a remote box works without port forwarding. Claude's sign-in page shows a code to paste back. For ChatGPT and Gemini, the final redirect to `localhost:1455` / `127.0.0.1:1456` fails to load on your laptop; paste that page's URL into the dashboard.
 
 ## Commands
 
 ```
 clipx setup        configure, install the service, start, connect
 clipx status       health, remote URL, accounts and their usage windows
-clipx login claude | codex
+clipx login claude | codex | gemini
 clipx accounts
 clipx import <path> [--link | --no-refresh]
 clipx keys [list | create <name> | revoke <id>]
@@ -175,8 +182,6 @@ python3 tests/e2e.py target/release/clipx
 
 Static Linux builds: `CC_x86_64_unknown_linux_musl=musl-gcc cargo build --release --target x86_64-unknown-linux-musl`. Tagging `v*` builds Linux and macOS binaries and publishes a release with `SHA256SUMS`.
 
-## Not yet
-
-- Gemini accounts
+## Terms
 
 Using subscription logins outside the official apps may break the providers' terms. Check them for your plan.

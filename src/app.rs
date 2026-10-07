@@ -33,7 +33,7 @@ pub struct App {
     pub started: u64,
     pub shutdown: tokio::sync::Notify,
     claude_version: RwLock<String>,
-    rr: [AtomicUsize; 2],
+    rr: [AtomicUsize; 3],
 }
 
 impl App {
@@ -63,7 +63,7 @@ impl App {
             started: now(),
             shutdown: tokio::sync::Notify::new(),
             claude_version: RwLock::new(version),
-            rr: [AtomicUsize::new(0), AtomicUsize::new(0)],
+            rr: [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)],
         }))
     }
 
@@ -206,6 +206,8 @@ pub fn quota_from_headers(provider: Provider, h: &HeaderMap) -> Vec<QuotaWindow>
                 out.push(QuotaWindow { name, used_pct: pct.clamp(0.0, 100.0), resets_at: reset });
             }
         }
+        // Code Assist does not send per-account usage-window headers.
+        Provider::Gemini => {}
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
@@ -242,6 +244,18 @@ pub fn cooldown_secs(provider: Provider, h: &HeaderMap, body: &[u8]) -> u64 {
                     && let Some(s) = header_f64(h, &format!("x-codex-{w}-reset-after-seconds")) {
                         return (s as u64).clamp(1, 7 * 86400);
                     }
+            }
+        }
+        Provider::Gemini => {
+            // 429 RESOURCE_EXHAUSTED carries a google.rpc.RetryInfo detail, e.g. "retryDelay": "37s".
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) {
+                for d in v["error"]["details"].as_array().into_iter().flatten() {
+                    if d["@type"] == "type.googleapis.com/google.rpc.RetryInfo"
+                        && let Some(secs) = d["retryDelay"].as_str().and_then(|s| s.trim_end_matches('s').parse::<f64>().ok())
+                            && secs > 0.0 {
+                                return (secs.ceil() as u64).clamp(1, 7 * 86400);
+                            }
+                }
             }
         }
     }

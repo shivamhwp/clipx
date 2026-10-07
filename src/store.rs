@@ -11,21 +11,24 @@ use std::sync::{Arc, Mutex, RwLock};
 pub enum Provider {
     Claude,
     Codex,
+    Gemini,
 }
 
 impl Provider {
-    pub const ALL: &[Provider] = &[Provider::Claude, Provider::Codex];
+    pub const ALL: &[Provider] = &[Provider::Claude, Provider::Codex, Provider::Gemini];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Provider::Claude => "claude",
             Provider::Codex => "codex",
+            Provider::Gemini => "gemini",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "claude" | "anthropic" => Some(Provider::Claude),
             "codex" | "openai" | "chatgpt" => Some(Provider::Codex),
+            "gemini" | "google" | "gemini-cli" => Some(Provider::Gemini),
             _ => None,
         }
     }
@@ -56,6 +59,12 @@ pub struct AccountFile {
     pub org: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    /// Gemini Code Assist project id, assigned at login by loadCodeAssist/onboardUser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Gemini Code Assist tier (e.g. "free-tier", "standard-tier").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
     #[serde(default)]
     pub disabled: bool,
     #[serde(default)]
@@ -158,6 +167,8 @@ impl Account {
             "priority": f.priority,
             "no_refresh": f.no_refresh,
             "linked": f.linked,
+            "project_id": f.project_id,
+            "tier": f.tier,
             "expires_at": f.expires_at,
             "last_refresh": f.last_refresh,
             "created_at": f.created_at,
@@ -332,6 +343,7 @@ impl Store {
             f.last_refresh = if src.last_refresh > 0 { src.last_refresh } else { now() };
             f.account_id = src.account_id.or(f.account_id.take());
             f.plan = src.plan.or(f.plan.take());
+            f.project_id = src.project_id.or(f.project_id.take());
         }
         {
             let mut s = acc.state.lock().unwrap();
@@ -388,10 +400,13 @@ impl Store {
     }
 }
 
-/// Convert a CLIProxyAPI auth file (claude-*.json / codex-*.json) into an account.
+/// Convert a CLIProxyAPI auth file (claude-*.json / codex-*.json / gemini-*.json) into an account.
 pub fn from_cliproxy(v: &Value) -> Option<AccountFile> {
     let s = |k: &str| v.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
     let provider = Provider::parse(&s("type")?)?;
+    if provider == Provider::Gemini {
+        return from_cliproxy_gemini(v);
+    }
     let access_token = s("access_token")?;
     let email = s("email");
     let expires_at = s("expired").and_then(|e| crate::util::parse_rfc3339(&e)).unwrap_or(0);
@@ -418,12 +433,48 @@ pub fn from_cliproxy(v: &Value) -> Option<AccountFile> {
         account_uuid: s("account_uuid"),
         org: s("organization_name"),
         plan,
+        project_id: None,
+        tier: None,
         disabled: v.get("disabled").and_then(Value::as_bool).unwrap_or(false),
         priority: v.get("priority").and_then(Value::as_i64).unwrap_or(0) as i32,
         no_refresh: false,
         linked: None,
         created_at: now(),
         last_refresh: s("last_refresh").and_then(|e| crate::util::parse_rfc3339(&e)).unwrap_or(0),
+        device_id: device_id(),
+    })
+}
+
+/// Convert a CLIProxyAPI gemini-cli auth file into an account. Its shape differs from the
+/// claude/codex files: the OAuth token fields sit nested under "token" (it is written straight
+/// from a Go `oauth2.Token`), alongside a top-level "project_id" and "email".
+fn from_cliproxy_gemini(v: &Value) -> Option<AccountFile> {
+    let token = v.get("token")?;
+    let t = |k: &str| token.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
+    let access_token = t("access_token")?;
+    let email = v.get("email").and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
+    let project_id = v.get("project_id").and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
+    Some(AccountFile {
+        id: random_hex(6),
+        provider: Provider::Gemini,
+        label: default_label(Provider::Gemini, email.as_deref()),
+        email,
+        access_token,
+        refresh_token: t("refresh_token"),
+        id_token: None,
+        expires_at: t("expiry").and_then(|e| crate::util::parse_rfc3339(&e)).unwrap_or(0),
+        account_id: None,
+        account_uuid: None,
+        org: None,
+        plan: None,
+        project_id,
+        tier: None,
+        disabled: v.get("disabled").and_then(Value::as_bool).unwrap_or(false),
+        priority: v.get("priority").and_then(Value::as_i64).unwrap_or(0) as i32,
+        no_refresh: false,
+        linked: None,
+        created_at: now(),
+        last_refresh: 0,
         device_id: device_id(),
     })
 }
@@ -458,6 +509,8 @@ pub fn new_account(provider: Provider, access_token: String) -> AccountFile {
         account_uuid: None,
         org: None,
         plan: None,
+        project_id: None,
+        tier: None,
         disabled: false,
         priority: 0,
         no_refresh: false,

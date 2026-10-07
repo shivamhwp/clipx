@@ -56,6 +56,13 @@ pub struct Upstream {
     pub codex_api: String,
     #[serde(default = "d_codex_token")]
     pub codex_token_url: String,
+    /// Gemini Code Assist endpoint (the same one the Gemini CLI uses for Google-account logins).
+    #[serde(default = "d_gemini_api")]
+    pub gemini_api: String,
+    #[serde(default = "d_gemini_token")]
+    pub gemini_token_url: String,
+    #[serde(default = "d_gemini_userinfo")]
+    pub gemini_userinfo_url: String,
 }
 
 fn d_claude_api() -> String {
@@ -70,6 +77,15 @@ fn d_codex_api() -> String {
 fn d_codex_token() -> String {
     "https://auth.openai.com/oauth/token".into()
 }
+fn d_gemini_api() -> String {
+    "https://cloudcode-pa.googleapis.com".into()
+}
+fn d_gemini_token() -> String {
+    "https://oauth2.googleapis.com/token".into()
+}
+fn d_gemini_userinfo() -> String {
+    "https://www.googleapis.com/oauth2/v2/userinfo".into()
+}
 
 impl Default for Upstream {
     fn default() -> Self {
@@ -78,6 +94,9 @@ impl Default for Upstream {
             claude_token_url: d_claude_token(),
             codex_api: d_codex_api(),
             codex_token_url: d_codex_token(),
+            gemini_api: d_gemini_api(),
+            gemini_token_url: d_gemini_token(),
+            gemini_userinfo_url: d_gemini_userinfo(),
         }
     }
 }
@@ -109,6 +128,9 @@ fn is_default_upstream(u: &Upstream) -> bool {
         && u.claude_token_url == d.claude_token_url
         && u.codex_api == d.codex_api
         && u.codex_token_url == d.codex_token_url
+        && u.gemini_api == d.gemini_api
+        && u.gemini_token_url == d.gemini_token_url
+        && u.gemini_userinfo_url == d.gemini_userinfo_url
 }
 
 fn d_listen() -> String {
@@ -162,6 +184,15 @@ impl Config {
         }
         if let Some(v) = env("CLIPX_CODEX_TOKEN_URL") {
             self.upstream.codex_token_url = v;
+        }
+        if let Some(v) = env("CLIPX_GEMINI_API") {
+            self.upstream.gemini_api = v;
+        }
+        if let Some(v) = env("CLIPX_GEMINI_TOKEN_URL") {
+            self.upstream.gemini_token_url = v;
+        }
+        if let Some(v) = env("CLIPX_GEMINI_USERINFO_URL") {
+            self.upstream.gemini_userinfo_url = v;
         }
     }
 
