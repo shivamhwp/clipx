@@ -510,12 +510,26 @@ fn find_trycloudflare(line: &str) -> Option<String> {
     url.ends_with(".trycloudflare.com").then(|| url.to_string())
 }
 
+/// The cloudflared T3 Code downloads for T3 Connect, at
+/// `~/.t3/tools/cloudflared/<version>/<platform>/cloudflared`. Newest version wins.
+fn t3_cloudflared() -> Option<PathBuf> {
+    let root = crate::util::home_dir().join(".t3/tools/cloudflared");
+    let mut versions: Vec<PathBuf> = std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).collect();
+    versions.sort();
+    versions.into_iter().rev().find_map(|v| {
+        std::fs::read_dir(v).ok()?.flatten().map(|e| e.path().join("cloudflared")).find(|p| p.is_file())
+    })
+}
+
 pub async fn find_or_fetch_cloudflared(app: &App) -> Result<PathBuf, String> {
     let local = app.home.join("bin").join("cloudflared");
     if local.exists() {
         return Ok(local);
     }
     if let Some(p) = std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|d| d.join("cloudflared")).find(|p| p.exists())) {
+        return Ok(p);
+    }
+    if let Some(p) = t3_cloudflared() {
         return Ok(p);
     }
     let arch = match std::env::consts::ARCH {
