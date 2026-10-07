@@ -229,8 +229,55 @@ try:
     check("usage read from untyped codex stream", last["input"] == 20 and last["output"] == 4, last)
     up = last_upstream("/codex/responses")["headers"]
     check("codex headers", up["originator"] == "codex_cli_rs" and up["user-agent"].startswith("codex_cli_rs/0.160.1") and up["chatgpt-account-id"] == "acct-123")
-    s, r = req("POST", "/v1/messages", {"model": "gpt-5", "messages": []}, K)
-    check("wrong-endpoint model explained", s == 400 and "Codex" in r["error"]["message"])
+
+    # Claude Code with a GPT model: /v1/messages routes to Codex and translates both ways.
+    mock_reset()
+    s, r = req("POST", "/v1/messages", {"model": "gpt-5", "max_tokens": 50, "messages": [{"role": "user", "content": "hi"}]}, K)
+    check(
+        "messages->codex non-stream",
+        s == 200 and r["type"] == "message" and r["role"] == "assistant" and r["content"][0]["text"] == "codex says hi" and r["stop_reason"] == "end_turn",
+        r,
+    )
+    check("messages->codex usage shape", r["usage"]["input_tokens"] == 20 and r["usage"]["output_tokens"] == 4 and r["usage"]["cache_read_input_tokens"] == 8, r["usage"])
+    up = json.loads(last_upstream("/codex/responses")["body"])
+    check("messages->codex request fixed for codex", up["store"] is False and up["stream"] is True and "max_tokens" not in up)
+
+    s, h, body = req("POST", "/v1/messages", {"model": "gpt-5", "max_tokens": 50, "stream": True, "messages": [{"role": "user", "content": "hi"}]}, K, raw=True)
+    text = body.decode()
+    check(
+        "messages->codex stream shape",
+        s == 200 and "event: message_start" in text and "event: message_stop" in text and '"type":"text_delta","text":"codex says "' in text and h["content-type"].startswith("text/event-stream"),
+        text[:600],
+    )
+
+    # Tool call round trip: Anthropic tool shape in, Anthropic tool_use block out.
+    mock_reset()
+    s, h, body = req(
+        "POST",
+        "/v1/messages",
+        {"model": "gpt-5", "max_tokens": 50, "tools": [{"name": "f", "input_schema": {"type": "object"}}], "messages": [{"role": "user", "content": "use the tool"}], "stream": True},
+        K,
+        raw=True,
+    )
+    text = body.decode()
+    check(
+        "messages->codex tool call stream",
+        s == 200 and '"type":"tool_use","id":"call_1","name":"f"' in text and '"partial_json":"{\\"x\\":1}"' in text and '"stop_reason":"tool_use"' in text,
+        text[:800],
+    )
+    up = json.loads(last_upstream("/codex/responses")["body"])
+    check("messages->codex tool request shape", up["tools"][0] == {"type": "function", "name": "f", "description": "", "parameters": {"type": "object"}, "strict": False} and up["input"][0]["role"] == "user")
+
+    # count_tokens for a GPT model is a local estimate; no upstream call at all.
+    mock_reset()
+    s, r = req("POST", "/v1/messages/count_tokens", {"model": "gpt-5", "messages": [{"role": "user", "content": "how many tokens is this, roughly"}]}, K)
+    check("messages count_tokens gpt model", s == 200 and isinstance(r["input_tokens"], int) and r["input_tokens"] > 0, r)
+    check("count_tokens does not call codex upstream", len([e for e in mock_log() if e["path"].startswith("/codex/responses")]) == 0)
+
+    # Usage still gets recorded for the translated path.
+    time.sleep(0.2)
+    last = req("GET", "/api/requests?limit=1", headers=A)[1][0]
+    check("usage recorded for messages->codex", last["model"] == "gpt-5" and last["input"] == 20 and last["output"] == 4, last)
 
     time.sleep(0.3)
     s, u = req("GET", "/api/usage?days=7", headers=A)

@@ -219,12 +219,7 @@ async fn messages(ctx: Ctx, body: Bytes, count: bool) -> Response {
     };
     let (model, model_pin) = split_pin(&ctx.app, &peek.model);
     if provider_for_model(&model) == Some(Provider::Codex) {
-        return error(
-            Style::Anthropic,
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            &format!("{model} is a Codex model; call it through /v1/responses or /v1/chat/completions"),
-        );
+        return messages_codex(ctx, body, model, model_pin, count, peek.stream).await;
     }
     let plan = if native && model_pin.is_none() {
         ClaudeBody::Raw(body)
@@ -253,6 +248,75 @@ async fn messages(ctx: Ctx, body: Bytes, count: bool) -> Response {
         Ok((acc, resp)) => passthrough(Recorder::new(&ctx, Provider::Claude, acc, &model), resp, peek.stream),
         Err(r) => r,
     }
+}
+
+/// `/v1/messages` and `/v1/messages/count_tokens` for a Codex/GPT model: Claude Code
+/// (or any Anthropic client) talking to a ChatGPT account. We translate the request
+/// to Codex's Responses shape, send it through the normal account rotation, and
+/// translate the answer (or the SSE stream) back to Anthropic Messages shape.
+async fn messages_codex(ctx: Ctx, body: Bytes, model: String, model_pin: Option<String>, count: bool, client_stream: bool) -> Response {
+    let Ok(mut v) = serde_json::from_slice::<Value>(&body) else {
+        return error(Style::Anthropic, StatusCode::BAD_REQUEST, "invalid_request_error", "body is not valid JSON");
+    };
+    v["model"] = json!(model);
+    let translated_req = translate::messages_to_codex(&v);
+    if count {
+        // Codex has no count_tokens endpoint; a byte-based estimate is good enough
+        // for Claude Code's "will this fit" check, and avoids a round trip.
+        let len = serde_json::to_string(&translated_req).unwrap_or_default().len();
+        return json_response(StatusCode::OK, &json!({"input_tokens": (len / 4).max(1)}));
+    }
+    let emit_thinking = translate::wants_thinking(&v);
+    let payload = Bytes::from(serde_json::to_vec(&translated_req).unwrap_or_default());
+    let pin = ctx.pin.clone().or(model_pin);
+    let url = format!("{}/responses", ctx.app.cfg.read().unwrap().upstream.codex_api);
+    let app = ctx.app.clone();
+    let client_headers = ctx.headers.clone();
+    let sent = send(&ctx, Provider::Codex, pin.as_deref(), Style::Anthropic, &model, |f| {
+        app.http.post(&url).headers(codex_headers(&client_headers, f, true)).body(payload.clone())
+    })
+    .await;
+    let (acc, resp) = match sent {
+        Ok(x) => x,
+        Err(r) => return anthropic_shape_error(r).await,
+    };
+    let rec = Recorder::new(&ctx, Provider::Codex, acc, &model);
+    if client_stream {
+        translated(rec, resp, Translator::CodexAnthropic(translate::CodexToAnthropicStream::new(&model, emit_thinking)))
+    } else {
+        match collect_codex(resp, rec).await {
+            Ok(r) => json_response(StatusCode::OK, &translate::codex_to_message(&r, &model, emit_thinking)),
+            Err(e) => error(Style::Anthropic, StatusCode::BAD_GATEWAY, "upstream_error", &e),
+        }
+    }
+}
+
+/// `send()` passes 4xx bodies through untouched, in whatever shape the upstream used.
+/// For a GPT model called through `/v1/messages` that upstream is Codex (OpenAI
+/// shaped); rewrap it so an Anthropic client sees the usual error envelope.
+async fn anthropic_shape_error(r: Response) -> Response {
+    let status = r.status();
+    if !status.is_client_error() {
+        return r;
+    }
+    let (parts, body) = r.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, MAX_BODY).await else {
+        return Response::from_parts(parts, Body::empty());
+    };
+    let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+    let msg = v["error"]["message"].as_str().or_else(|| v["message"].as_str()).unwrap_or("upstream error");
+    // Codex error bodies rarely carry an Anthropic-style `error.type`; fall back to the
+    // status code so Claude Code's rate-limit backoff still sees `rate_limit_error`.
+    let kind = v["error"]["type"].as_str().filter(|t| !t.is_empty()).unwrap_or(match status.as_u16() {
+        401 => "authentication_error",
+        403 => "permission_error",
+        404 => "not_found_error",
+        429 => "rate_limit_error",
+        _ => "invalid_request_error",
+    });
+    error(Style::Anthropic, status, kind, msg)
 }
 
 // ------------------------------------------------------------------ codex
@@ -476,8 +540,12 @@ where
         let acc = match app.pick(provider, pin, &tried) {
             Ok(a) => a,
             Err(e) => {
+                // Every account is now exhausted. The most useful response is the last
+                // upstream error we actually saw (its status and any retry-after),
+                // not a generic "exhausted" message; x-clipx-tried says how many
+                // accounts we rotated through before giving up.
                 if let Some((s, h, b)) = last {
-                    return Err(upstream_error_response(s, &h, b));
+                    return Err(with_tried(upstream_error_response(s, &h, b), tried.len()));
                 }
                 if let Some(e) = last_net {
                     return Err(error(style, StatusCode::BAD_GATEWAY, "api_error", &format!("upstream unreachable: {e}")));
@@ -565,9 +633,16 @@ where
         tried.push(id);
     }
     match last {
-        Some((s, h, b)) => Err(upstream_error_response(s, &h, b)),
+        Some((s, h, b)) => Err(with_tried(upstream_error_response(s, &h, b), tried.len())),
         None => Err(error(style, StatusCode::BAD_GATEWAY, "api_error", &format!("upstream unreachable: {}", last_net.unwrap_or_default()))),
     }
+}
+
+fn with_tried(mut r: Response, n: usize) -> Response {
+    if let Ok(v) = HeaderValue::from_str(&n.to_string()) {
+        r.headers_mut().insert(HeaderName::from_static("x-clipx-tried"), v);
+    }
+    r
 }
 
 fn note_failure(acc: &Account, msg: &str, cooldown: u64) {
@@ -779,6 +854,7 @@ fn passthrough(mut rec: Recorder, resp: reqwest::Response, stream_hint: bool) ->
 enum Translator {
     Claude(translate::ClaudeToChatStream),
     Codex(translate::CodexToChatStream),
+    CodexAnthropic(translate::CodexToAnthropicStream),
 }
 
 impl Translator {
@@ -786,12 +862,24 @@ impl Translator {
         match self {
             Translator::Claude(t) => t.on_event(ev, out),
             Translator::Codex(t) => t.on_event(ev, out),
+            Translator::CodexAnthropic(t) => t.on_event(ev, out),
         }
     }
     fn finish(&mut self, out: &mut String) {
         match self {
             Translator::Claude(t) => t.finish(out),
             Translator::Codex(t) => t.finish(out),
+            Translator::CodexAnthropic(t) => t.finish(out),
+        }
+    }
+    /// Shape a mid-stream network failure the same way the translator shapes everything else.
+    fn on_error(&mut self, msg: &str, out: &mut String) {
+        match self {
+            Translator::CodexAnthropic(t) => t.on_error(msg, out),
+            Translator::Claude(_) | Translator::Codex(_) => {
+                out.push_str(&sse::frame(None, &json!({"error": {"message": msg, "type": "upstream_error"}}).to_string()));
+                out.push_str("data: [DONE]\n\n");
+            }
         }
     }
 }
@@ -841,9 +929,9 @@ impl Stream for Translate {
                 Poll::Ready(Some(Err(e))) => {
                     self.ended = true;
                     let msg = e.to_string();
-                    out.push_str(&sse::frame(None, &json!({"error": {"message": msg, "type": "upstream_error"}}).to_string()));
-                    out.push_str("data: [DONE]\n\n");
-                    self.done(Some(msg));
+                    let this = &mut *self;
+                    this.t.on_error(&msg, &mut out);
+                    this.done(Some(msg));
                     return Poll::Ready(Some(Ok(Bytes::from(out))));
                 }
                 Poll::Ready(None) => {
