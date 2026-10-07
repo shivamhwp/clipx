@@ -768,7 +768,13 @@ pub fn wants_thinking(req: &Value) -> bool {
 pub fn messages_to_codex(req: &Value) -> Value {
     let mut input = Vec::new();
     for m in req["messages"].as_array().into_iter().flatten() {
-        input.extend(codex_items(m["role"].as_str().unwrap_or("user"), &m["content"]));
+        // Claude Code puts system messages mid-conversation; the ChatGPT backend refuses
+        // the system role but takes the same text as a developer message.
+        let role = match m["role"].as_str().unwrap_or("user") {
+            "system" | "developer" => "developer",
+            r => r,
+        };
+        input.extend(codex_items(role, &m["content"]));
     }
     let mut out = json!({
         "model": req["model"],
@@ -1060,6 +1066,17 @@ impl CodexToAnthropicStream {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn system_messages_become_developer_messages() {
+        let req = serde_json::json!({"model": "gpt-5.6-sol", "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": [{"type": "text", "text": "be terse"}]},
+        ]});
+        let out = super::messages_to_codex(&req);
+        assert_eq!(out["input"][1]["role"], "developer");
+        assert_eq!(out["input"][1]["content"][0]["type"], "input_text");
+    }
+
     use super::*;
 
     fn events(raw: &str) -> Vec<sse::Event> {

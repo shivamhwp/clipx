@@ -306,7 +306,7 @@ async fn anthropic_shape_error(r: Response) -> Response {
     let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
         return Response::from_parts(parts, Body::from(bytes));
     };
-    let msg = v["error"]["message"].as_str().or_else(|| v["message"].as_str()).unwrap_or("upstream error");
+    let msg = v["error"]["message"].as_str().or_else(|| v["message"].as_str()).or_else(|| v["detail"].as_str()).unwrap_or("upstream error");
     // Codex error bodies rarely carry an Anthropic-style `error.type`; fall back to the
     // status code so Claude Code's rate-limit backoff still sees `rate_limit_error`.
     let kind = v["error"]["type"].as_str().filter(|t| !t.is_empty()).unwrap_or(match status.as_u16() {
