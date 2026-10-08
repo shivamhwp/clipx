@@ -935,10 +935,15 @@ async fn install_libatomic() {
     }
 }
 
+/// `t3 connect status --json`. None when the `t3` command is missing or did not answer.
+fn t3_connect_status() -> Option<Value> {
+    let out = std::process::Command::new(t3::cli()?).args(["connect", "status", "--json"]).stderr(std::process::Stdio::null()).output().ok()?;
+    serde_json::from_slice(&out.stdout).ok()
+}
+
 /// Whether this machine is on T3 Connect. None when the `t3` command is missing or did not answer.
 fn t3_linked() -> Option<bool> {
-    let out = std::process::Command::new(t3::cli()?).args(["connect", "status", "--json"]).stderr(std::process::Stdio::null()).output().ok()?;
-    serde_json::from_slice::<Value>(&out.stdout).ok().map(|v| v["linked"] == true)
+    t3_connect_status().map(|v| v["linked"] == true)
 }
 
 fn print_t3(t: &Value) {
@@ -983,9 +988,15 @@ async fn setup_t3(api: &Api, interactive: bool) -> Result<Option<Value>, String>
     };
     match t3_linked() {
         Some(false) => {
+            let was_running = t3::running();
             println!("\nNow T3 Connect, so you can use this machine from app.t3.codes.");
             println!("If T3 asks to install its relay client, answer y.\n");
             let _ = std::process::Command::new(&cli).arg("connect").status();
+            // A T3 server that was already running only links to T3 Connect when it starts.
+            let waiting = t3_connect_status().is_some_and(|v| v["authenticated"] == true && v["desired"] == true && v["linked"] != true);
+            if was_running && waiting && confirm("\nT3 Code connects once it restarts, which stops anything it is running. Restart it now?").await {
+                let _ = std::process::Command::new(&cli).args(["service", "restart"]).status();
+            }
         }
         Some(true) if !t3::running() => {
             let _ = std::process::Command::new(&cli).args(["service", "install"]).status();
