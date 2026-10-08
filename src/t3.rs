@@ -19,7 +19,7 @@ pub fn instance_id(p: Provider) -> &'static str {
     }
 }
 
-fn display_name(p: Provider) -> &'static str {
+pub fn display_name(p: Provider) -> &'static str {
     match p {
         Provider::Codex => "ChatGPT (clipx)",
         _ => "Claude (clipx)",
@@ -133,7 +133,7 @@ pub fn write(v: &Value) -> Result<(), String> {
     })
 }
 
-fn instance<'a>(settings: &'a Value, p: Provider) -> Option<&'a Value> {
+fn instance(settings: &Value, p: Provider) -> Option<&Value> {
     settings["providerInstances"].get(instance_id(p))
 }
 
@@ -173,10 +173,20 @@ fn managed_env(p: Provider, base: &str, key: Option<&str>) -> Vec<Value> {
     env
 }
 
+/// Where Claude Code and Codex are. T3's service reads PATH from the login shell, which
+/// may not include ~/.local/bin, so the providers get the full path.
+pub fn programs() -> Vec<(Provider, String)> {
+    PROVIDERS
+        .into_iter()
+        .filter_map(|p| crate::util::which(if p == Provider::Codex { "codex" } else { "claude" }).map(|path| (p, path.display().to_string())))
+        .collect()
+}
+
 /// Make T3's clipx providers match `want`: add or update those, remove the others.
 /// `keys` holds a new key for each provider that needs one; providers without an entry
-/// keep the key T3 already has. Settings the user changed on these providers are kept.
-pub fn apply(settings: &mut Value, base: &str, want: &[Provider], keys: &[(Provider, String)]) {
+/// keep the key T3 already has. `programs` fills in where each agent is, unless T3
+/// already has a path. Settings the user changed on these providers are kept.
+pub fn apply(settings: &mut Value, base: &str, want: &[Provider], keys: &[(Provider, String)], programs: &[(Provider, String)]) {
     if !settings.is_object() {
         *settings = json!({});
     }
@@ -210,6 +220,11 @@ pub fn apply(settings: &mut Value, base: &str, want: &[Provider], keys: &[(Provi
         let mut config = inst.get("config").and_then(Value::as_object).cloned().unwrap_or_default();
         if p == Provider::Codex {
             config.insert("launchArgs".into(), json!(codex_args(base)));
+        }
+        if let Some((_, path)) = programs.iter().find(|(pp, _)| *pp == p)
+            && config.get("binaryPath").and_then(Value::as_str).is_none_or(str::is_empty)
+        {
+            config.insert("binaryPath".into(), json!(path));
         }
         inst.insert("config".into(), Value::Object(config));
         instances.insert(id.into(), Value::Object(inst));
@@ -252,6 +267,12 @@ pub fn manual(base: &str, key: &str) -> Value {
         .collect::<Vec<_>>())
 }
 
+/// Providers in `want` that need a new key: T3 has none for them, or clipx no longer has
+/// the key T3 holds. `key_names` are the names of clipx's keys and `name` names T3's key.
+pub fn needs_key(settings: &Value, want: &[Provider], key_names: &[String], name: impl Fn(Provider) -> String) -> Vec<Provider> {
+    want.iter().copied().filter(|p| !(has_key(settings, *p) && key_names.contains(&name(*p)))).collect()
+}
+
 /// Providers with at least one account in clipx, in the order T3 should list them.
 pub fn wanted(app: &App) -> Vec<Provider> {
     let accounts = app.store.list();
@@ -268,10 +289,7 @@ pub fn sync(app: &App) -> Result<(Vec<Provider>, bool), String> {
     let want = wanted(app);
     let names: Vec<String> = app.store.keys.read().unwrap().iter().map(|k| k.name.clone()).collect();
     let mut fresh = Vec::new();
-    for p in want.iter().copied() {
-        if has_key(&settings, p) && names.iter().any(|n| n == key_name(p)) {
-            continue;
-        }
+    for p in needs_key(&settings, &want, &names, |p| key_name(p).to_string()) {
         let stale: Vec<String> = app.store.keys.read().unwrap().iter().filter(|k| k.name == key_name(p)).map(|k| k.id.clone()).collect();
         for id in stale {
             app.store.revoke_key(&id);
@@ -279,7 +297,7 @@ pub fn sync(app: &App) -> Result<(Vec<Provider>, bool), String> {
         let (_, plain) = app.store.create_key(key_name(p)).map_err(|e| e.to_string())?;
         fresh.push((p, plain));
     }
-    apply(&mut settings, &base, &want, &fresh);
+    apply(&mut settings, &base, &want, &fresh, &programs());
     if settings == before {
         return Ok((want, false));
     }
@@ -298,7 +316,7 @@ pub fn sync(app: &App) -> Result<(Vec<Provider>, bool), String> {
 pub fn remove(app: &App) -> Result<(), String> {
     let mut settings = read()?;
     if !added(&settings).is_empty() || ["defaultModelSelection", "textGenerationModelSelection"].iter().any(|f| PROVIDERS.iter().any(|p| settings[*f]["instanceId"] == instance_id(*p))) {
-        apply(&mut settings, "", &[], &[]);
+        apply(&mut settings, "", &[], &[], &[]);
         write(&settings)?;
     }
     let ids: Vec<String> = app.store.keys.read().unwrap().iter().filter(|k| PROVIDERS.iter().any(|p| k.name == key_name(*p))).map(|k| k.id.clone()).collect();
@@ -363,7 +381,7 @@ mod tests {
             "defaultModelSelection": {"instanceId": "claude-p", "model": "claude-opus-5-5"},
             "providerInstances": {"claude-p": {"driver": "claudeAgent", "environment": []}},
         });
-        apply(&mut s, "http://127.0.0.1:8318", &PROVIDERS, &[(Provider::Claude, "sk-a".into()), (Provider::Codex, "sk-b".into())]);
+        apply(&mut s, "http://127.0.0.1:8318", &PROVIDERS, &[(Provider::Claude, "sk-a".into()), (Provider::Codex, "sk-b".into())], &[(Provider::Claude, "/home/u/.local/bin/claude".into())]);
         assert_eq!(s["theme"], "dark");
         assert_eq!(s["defaultModelSelection"]["instanceId"], "claude-p");
         assert_eq!(s["textGenerationModelSelection"]["instanceId"], "clipx-claude");
@@ -373,21 +391,23 @@ mod tests {
         assert_eq!(env_value(&s, Provider::Codex, "CLIPX_API_KEY").unwrap()["sensitive"], true);
         assert!(s["providerInstances"]["clipx-codex"]["config"]["launchArgs"].as_str().unwrap().contains("base_url=http://127.0.0.1:8318/v1"));
         assert!(has_key(&s, Provider::Claude));
+        assert_eq!(s["providerInstances"]["clipx-claude"]["config"]["binaryPath"], "/home/u/.local/bin/claude");
+        assert!(s["providerInstances"]["clipx-codex"]["config"].get("binaryPath").is_none());
     }
 
     #[test]
     fn keeps_a_key_t3_moved_to_its_secret_store_and_user_changes() {
         let mut s = json!({});
-        apply(&mut s, "http://127.0.0.1:8318", &[Provider::Claude], &[(Provider::Claude, "sk-a".into())]);
+        apply(&mut s, "http://127.0.0.1:8318", &[Provider::Claude], &[(Provider::Claude, "sk-a".into())], &[]);
         // What T3 does on its next save, plus a user rename and an extra variable.
         let inst = &mut s["providerInstances"]["clipx-claude"];
         inst["displayName"] = json!("My Claude");
         inst["environment"][1] = json!({"name": "ANTHROPIC_AUTH_TOKEN", "value": "", "sensitive": true, "valueRedacted": true});
         inst["environment"].as_array_mut().unwrap().push(json!({"name": "CLAUDE_CODE_EFFORT_LEVEL", "value": "high", "sensitive": false}));
         let saved = s.clone();
-        apply(&mut s, "http://127.0.0.1:8318", &[Provider::Claude], &[]);
+        apply(&mut s, "http://127.0.0.1:8318", &[Provider::Claude], &[], &[]);
         assert_eq!(s, saved, "a second sync with nothing new must not change the file");
-        apply(&mut s, "http://127.0.0.1:9000", &[Provider::Claude], &[]);
+        apply(&mut s, "http://127.0.0.1:9000", &[Provider::Claude], &[], &[]);
         assert_eq!(s["providerInstances"]["clipx-claude"]["displayName"], "My Claude");
         assert_eq!(env_value(&s, Provider::Claude, "ANTHROPIC_AUTH_TOKEN").unwrap()["valueRedacted"], true);
         assert_eq!(env_value(&s, Provider::Claude, "ANTHROPIC_BASE_URL").unwrap()["value"], "http://127.0.0.1:9000");
@@ -398,12 +418,12 @@ mod tests {
     #[test]
     fn removing_clears_selections_that_point_at_clipx() {
         let mut s = json!({"textGenerationModelSelection": {"instanceId": "codex-vm", "model": "gpt-6-luna"}});
-        apply(&mut s, "http://x", &PROVIDERS, &[(Provider::Claude, "a".into()), (Provider::Codex, "b".into())]);
+        apply(&mut s, "http://x", &PROVIDERS, &[(Provider::Claude, "a".into()), (Provider::Codex, "b".into())], &[]);
         assert_eq!(s["defaultModelSelection"]["instanceId"], "clipx-claude");
-        apply(&mut s, "http://x", &[Provider::Codex], &[]);
+        apply(&mut s, "http://x", &[Provider::Codex], &[], &[]);
         assert!(s["providerInstances"].get("clipx-claude").is_none());
         assert_eq!(s["defaultModelSelection"], json!({"instanceId": "clipx-codex", "model": "gpt-6.1-sol"}));
-        apply(&mut s, "", &[], &[]);
+        apply(&mut s, "", &[], &[], &[]);
         assert!(s.get("defaultModelSelection").is_none());
         assert_eq!(s["textGenerationModelSelection"]["instanceId"], "codex-vm");
         assert_eq!(s["providerInstances"], json!({}));

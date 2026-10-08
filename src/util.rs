@@ -145,6 +145,16 @@ pub fn home_dir() -> std::path::PathBuf {
     std::env::var_os("HOME").map(Into::into).unwrap_or_else(|| ".".into())
 }
 
+/// A program on PATH or in ~/.local/bin, where the Claude Code and Codex installers put them.
+pub fn which(cmd: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .chain([home_dir().join(".local/bin")])
+        .map(|d| d.join(cmd))
+        .find(|p| p.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

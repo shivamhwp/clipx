@@ -521,6 +521,7 @@ function t3(){
   const manual=(d.manual||[]).map(m=>row(esc(m.name),'Provider type: '+esc(m.driver),'',code(m.environment.map(e=>e.name+'='+e.value).join('\n'))+(m.launch_args?'<p class="row-d" style="margin:10px 0 6px">Launch arguments</p>'+code(m.launch_args,1):''))).join('');
   return ['T3 Code','',`
   ${sec('Providers',row(st,desc,d.installed?sw(on,`setT3(${!on})`,on?'Remove from T3':'Add to T3'):''))}
+  ${sec('T3 on another machine',row('','Install clipx there without its server, then point that T3 at this clipx. It asks for the admin token from <code>~/.clipx/config.toml</code> here.','',code('curl -fsSL https://raw.githubusercontent.com/shivamhwp/clipx/main/install.sh | CLIPX_NO_SETUP=1 sh\nclipx t3 --server '+base(),1)))}
   ${sec('Set it up yourself',row('','In T3, open Settings, then Providers, and add these. Make a key on the <a class="link" href="#keys">API keys</a> page and use it for &lt;your clipx key&gt;.')+manual)}
   <div class="note">${ic('info')}<span>To use T3 away from this machine, run <code>t3 connect</code> here once, then open <a class="link" href="https://app.t3.codes" target="_blank" rel="noopener">app.t3.codes</a>.</span></div>`];
 }

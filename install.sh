@@ -8,7 +8,8 @@
 #   curl -fsSL …/install.sh | sh -s -- --tunnel off --public
 #
 # CLIPX_REPO, CLIPX_VERSION (a tag, default latest), CLIPX_DOWNLOAD_BASE (a mirror) and
-# CLIPX_INSTALL_DIR override defaults.
+# CLIPX_INSTALL_DIR override defaults. CLIPX_NO_SETUP=1 installs the binary only, for a
+# machine that runs T3 Code but uses clipx from another machine (`clipx t3 --server`).
 set -eu
 
 REPO="${CLIPX_REPO:-shivamhwp/clipx}"
@@ -79,6 +80,7 @@ case ":$PATH:" in
   *) say "add $dir to your PATH:  export PATH=\"$dir:\$PATH\"" ;;
 esac
 
+[ -n "${CLIPX_NO_SETUP:-}" ] && exit 0
 say ""
 # Under `curl … | sh` the script itself is standard input. Hand setup the terminal so it
 # can sign in to accounts and connect T3.

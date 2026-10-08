@@ -638,6 +638,79 @@ try:
     time.sleep(6)
     check("off stays off", "clipx-claude" not in t3_settings()["providerInstances"])
 
+    # T3 on a machine without clipx, using this clipx: `clipx t3 --server`.
+    far_home = os.path.join(HOME, "far-clipx")
+    far_t3 = os.path.join(HOME, "far-t3")
+    os.makedirs(os.path.join(far_t3, "userdata"))
+    far_settings = os.path.join(far_t3, "userdata", "settings.json")
+    json.dump({"theme": "light"}, open(far_settings, "w"))
+    FAR = dict(ENV, CLIPX_HOME=far_home, T3CODE_HOME=far_t3, CLIPX_ADMIN_TOKEN=ADMIN)
+    out = subprocess.run([BIN, "t3", "--server", f"http://127.0.0.1:{PORT}/"], env=FAR, capture_output=True, text=True)
+    far = json.load(open(far_settings))
+    check("clipx t3 --server adds clipx to a T3 elsewhere", out.returncode == 0 and set(far["providerInstances"]) == {"clipx-claude"} and far["theme"] == "light", (out.stdout, out.stderr, far))
+    env = t3_env(far, "clipx-claude")
+    check("it points at the clipx it was given", env["ANTHROPIC_BASE_URL"]["value"] == f"http://127.0.0.1:{PORT}", env)
+    s, r = req("POST", "/v1/messages", {"model": "claude-sonnet-5-5", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]}, headers={"authorization": "Bearer " + env["ANTHROPIC_AUTH_TOKEN"]["value"]})
+    check("and its key works", s == 200, (s, r))
+    s, st = req("GET", "/api/state", headers=A)
+    far_keys = [k for k in st["keys"] if k["name"].startswith("T3 Code (Claude) on ")]
+    check("its key is named after the machine", len(far_keys) == 1, st["keys"])
+    link = os.path.join(far_home, "t3-link.json")
+    check("it remembers the clipx, privately", oct(os.stat(link).st_mode & 0o777) == "0o600" and json.load(open(link))["server"] == f"http://127.0.0.1:{PORT}")
+    before = os.stat(far_settings).st_mtime_ns
+    out = subprocess.run([BIN, "t3"], env=dict(FAR, CLIPX_ADMIN_TOKEN=""), capture_output=True, text=True)
+    s, st = req("GET", "/api/state", headers=A)
+    check("clipx t3 again changes nothing", out.returncode == 0 and os.stat(far_settings).st_mtime_ns == before
+          and [k["id"] for k in st["keys"] if k["name"].startswith("T3 Code (Claude) on ")] == [far_keys[0]["id"]], (out.stdout, out.stderr))
+    req("DELETE", f"/api/keys/{far_keys[0]['id']}", headers=A)
+    subprocess.run([BIN, "t3"], env=FAR, capture_output=True, text=True)
+    newkey = t3_env(json.load(open(far_settings)), "clipx-claude")["ANTHROPIC_AUTH_TOKEN"]["value"]
+    s, r = req("POST", "/v1/messages", {"model": "claude-sonnet-5-5", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]}, headers={"authorization": "Bearer " + newkey})
+    check("a revoked key is replaced on the next run", newkey != env["ANTHROPIC_AUTH_TOKEN"]["value"] and s == 200, (s, r))
+    out = subprocess.run([BIN, "t3", "off"], env=FAR, capture_output=True, text=True)
+    s, st = req("GET", "/api/state", headers=A)
+    far = json.load(open(far_settings))
+    check("clipx t3 off there removes it and its key", out.returncode == 0 and far["providerInstances"] == {} and far["theme"] == "light"
+          and not os.path.exists(link) and not any(k["name"].startswith("T3 Code") for k in st["keys"]), (out.stdout, out.stderr, far))
+
+    # clipx update, from a local copy of a release.
+    import hashlib, http.server, tarfile, platform
+    target = {"x86_64": "x86_64-unknown-linux-musl", "aarch64": "aarch64-unknown-linux-musl"}[platform.machine()]
+    rel = os.path.join(HOME, "release")
+    os.makedirs(rel)
+    def publish(binary):
+        with tarfile.open(os.path.join(rel, f"clipx-{target}.tar.gz"), "w:gz") as t:
+            t.add(binary, arcname="clipx")
+        h = hashlib.sha256(open(os.path.join(rel, f"clipx-{target}.tar.gz"), "rb").read()).hexdigest()
+        open(os.path.join(rel, "SHA256SUMS"), "w").write(f"{h}  clipx-{target}.tar.gz\n")
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), lambda *a: http.server.SimpleHTTPRequestHandler(*a, directory=rel))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    inst = os.path.join(HOME, "inst")
+    os.makedirs(inst)
+    shutil.copy(BIN, os.path.join(inst, "clipx"))
+    UPD = dict(ENV, CLIPX_HOME=os.path.join(HOME, "upd-home"), CLIPX_DOWNLOAD_BASE=f"http://127.0.0.1:{srv.server_port}")
+    publish(BIN)
+    out = subprocess.run([os.path.join(inst, "clipx"), "update"], env=UPD, capture_output=True, text=True)
+    check("clipx update knows when it is current", out.returncode == 0 and "up to date" in out.stdout, (out.stdout, out.stderr))
+    older = os.path.join(HOME, "older")
+    open(older, "w").write("#!/bin/sh\necho clipx 0.0.1\n")
+    os.chmod(older, 0o755)
+    publish(older)
+    out = subprocess.run([os.path.join(inst, "clipx"), "update"], env=UPD, capture_output=True, text=True)
+    check("clipx update never goes back a version", out.returncode == 0 and "up to date" in out.stdout and open(os.path.join(inst, "clipx"), "rb").read() == open(BIN, "rb").read(), (out.stdout, out.stderr))
+    newer = os.path.join(HOME, "newer")
+    open(newer, "w").write("#!/bin/sh\necho clipx 9.9.9\n")
+    os.chmod(newer, 0o755)
+    publish(newer)
+    open(os.path.join(rel, "SHA256SUMS"), "w").write("0" * 64 + f"  clipx-{target}.tar.gz\n")
+    out = subprocess.run([os.path.join(inst, "clipx"), "update"], env=UPD, capture_output=True, text=True)
+    check("clipx update refuses a bad checksum", out.returncode != 0 and "checksum" in out.stderr and open(os.path.join(inst, "clipx"), "rb").read() == open(BIN, "rb").read(), (out.stdout, out.stderr))
+    publish(newer)
+    out = subprocess.run([os.path.join(inst, "clipx"), "update"], env=UPD, capture_output=True, text=True)
+    check("clipx update installs the new one", out.returncode == 0 and "updated clipx to v9.9.9" in out.stdout
+          and open(os.path.join(inst, "clipx")).read() == open(newer).read() and os.listdir(inst) == ["clipx"], (out.stdout, out.stderr, os.listdir(inst)))
+    srv.shutdown()
+
     print(f"\nall {len(PASSED)} checks passed")
 finally:
     cleanup()

@@ -11,6 +11,7 @@ mod store;
 mod t3;
 mod translate;
 mod tunnel;
+mod update;
 mod usage;
 mod util;
 
@@ -107,7 +108,19 @@ enum Cmd {
     },
     /// Add clipx to T3 Code as "Claude (clipx)" and "ChatGPT (clipx)": on (default), off,
     /// or show (the values to enter in T3 yourself).
-    T3 { action: Option<String> },
+    T3 {
+        action: Option<String>,
+        /// T3 runs on this machine but clipx runs elsewhere: the clipx address T3 should use,
+        /// like http://127.0.0.1:8318. Asks for clipx's admin token (or reads CLIPX_ADMIN_TOKEN).
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Update clipx to the latest release and restart it.
+    Update {
+        /// A release tag such as v0.2.0, instead of the latest.
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Remove the background service (keeps ~/.clipx).
     Uninstall,
 }
@@ -512,9 +525,13 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
             service::logs(home, follow);
             Ok(())
         }
-        Cmd::T3 { action } => {
+        Cmd::T3 { action, server } => {
+            let action = action.unwrap_or_else(|| "on".into());
+            if server.is_some() || (!config::config_path(home).exists() && T3Link::path(home).exists()) {
+                return t3_remote(home, &action, server).await;
+            }
             let api = Api::new(home)?;
-            match action.as_deref().unwrap_or("on") {
+            match action.as_str() {
                 "on" | "add" => {
                     let t = api.post("/t3", json!({"enabled": true})).await?;
                     print_t3(&t);
@@ -545,6 +562,27 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
             }
             Ok(())
         }
+        Cmd::Update { version } => {
+            println!("checking for a new clipx");
+            let Some((exe, v)) = update::install(version).await? else {
+                println!("clipx {} is up to date", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            };
+            println!("updated clipx to {v}");
+            // The new binary restarts the server and refreshes T3, so its own code does it.
+            let run = |args: &[&str]| std::process::Command::new(&exe).args(args).env("CLIPX_HOME", home).status().is_ok_and(|s| s.success());
+            let running = match Api::new(home) {
+                Ok(api) => api.get("/state").await.is_ok(),
+                Err(_) => false,
+            };
+            if running && !run(&["restart"]) {
+                return Err("the new clipx did not restart; see `clipx logs`".into());
+            }
+            if T3Link::path(home).exists() && !run(&["t3"]) {
+                return Err("could not refresh T3 Code; run `clipx t3`".into());
+            }
+            Ok(())
+        }
         Cmd::Uninstall => {
             if let Ok(api) = Api::new(home)
                 && api.get("/state").await.is_ok_and(|s| s["t3"]["enabled"] == true)
@@ -560,6 +598,104 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
         }
         Cmd::Serve | Cmd::Relay { .. } => unreachable!(),
     }
+}
+
+/// A clipx on another machine that this machine's T3 uses, saved by `clipx t3 --server`.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct T3Link {
+    server: String,
+    token: String,
+}
+
+impl T3Link {
+    fn path(home: &Path) -> PathBuf {
+        home.join("t3-link.json")
+    }
+    fn load(home: &Path) -> Option<Self> {
+        serde_json::from_slice(&std::fs::read(Self::path(home)).ok()?).ok()
+    }
+    fn api(&self) -> Api {
+        Api { base: self.server.clone(), token: self.token.clone(), http: reqwest::Client::new() }
+    }
+}
+
+/// `clipx t3` for a T3 on this machine and a clipx somewhere else. There is no clipx server
+/// here to keep T3 in step, so this runs once; `clipx update` runs it again.
+async fn t3_remote(home: &Path, action: &str, server: Option<String>) -> Res {
+    let link = match server {
+        Some(s) => {
+            let token = match std::env::var("CLIPX_ADMIN_TOKEN").ok().filter(|t| !t.is_empty()) {
+                Some(t) => t,
+                None => prompt_secret("clipx admin token (admin_token in ~/.clipx/config.toml on that machine): ").await.filter(|t| !t.is_empty()).ok_or("no admin token given")?,
+            };
+            T3Link { server: s.trim_end_matches('/').to_string(), token }
+        }
+        None => T3Link::load(home).ok_or("no clipx to use; run `clipx t3 --server <clipx address>`")?,
+    };
+    let api = link.api();
+    let state = api.get("/state").await.map_err(|e| format!("{}: {e}", link.server))?;
+    // Keys get this machine's name, so they never clash with a T3 next to that clipx.
+    let host = std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string()))
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "another machine".into());
+    let key_name = |p: store::Provider| format!("{} on {host}", t3::key_name(p));
+    let ours = |name: &str| t3::PROVIDERS.iter().any(|p| name == key_name(*p));
+    let mut settings = t3::read()?;
+    match action {
+        "on" | "add" => {
+            if !t3::installed() {
+                return Err(format!("T3 Code is not installed here (no {})", t3::home().display()));
+            }
+            let accounts: Vec<store::Provider> = state["accounts"].as_array().into_iter().flatten().filter_map(|a| serde_json::from_value(a["provider"].clone()).ok()).collect();
+            let want: Vec<store::Provider> = t3::PROVIDERS.into_iter().filter(|p| accounts.contains(p)).collect();
+            let keys = state["keys"].as_array().cloned().unwrap_or_default();
+            let names: Vec<String> = keys.iter().filter_map(|k| k["name"].as_str().map(String::from)).collect();
+            let mut fresh = Vec::new();
+            for p in t3::needs_key(&settings, &want, &names, key_name) {
+                for k in keys.iter().filter(|k| k["name"] == key_name(p).as_str()) {
+                    api.delete(&format!("/keys/{}", k["id"].as_str().unwrap_or(""))).await?;
+                }
+                let r = api.post("/keys", json!({"name": key_name(p)})).await?;
+                fresh.push((p, r["key"].as_str().unwrap_or("").to_string(), r["id"].as_str().unwrap_or("").to_string()));
+            }
+            let before = settings.clone();
+            let new_keys: Vec<(store::Provider, String)> = fresh.iter().map(|(p, k, _)| (*p, k.clone())).collect();
+            t3::apply(&mut settings, &link.server, &want, &new_keys, &t3::programs());
+            if settings != before
+                && let Err(e) = t3::write(&settings)
+            {
+                for (_, _, id) in &fresh {
+                    let _ = api.delete(&format!("/keys/{id}")).await;
+                }
+                return Err(e);
+            }
+            util::write_private(&T3Link::path(home), &serde_json::to_vec_pretty(&link).unwrap()).map_err(|e| e.to_string())?;
+            let added: Vec<&str> = t3::added(&settings).iter().map(|p| t3::display_name(*p)).collect();
+            if added.is_empty() {
+                println!("T3 Code      the clipx at {} has no Claude or ChatGPT accounts yet; run this again after adding one", link.server);
+            } else {
+                println!("T3 Code      added {}, using the clipx at {}", added.join(" and "), link.server);
+            }
+            println!("clipx does not run here, so run `clipx t3` again after adding a new kind of account. `clipx update` does it for you.");
+        }
+        "off" | "remove" => {
+            let before = settings.clone();
+            t3::apply(&mut settings, "", &[], &[], &[]);
+            if settings != before {
+                t3::write(&settings)?;
+            }
+            for k in state["keys"].as_array().into_iter().flatten().filter(|k| k["name"].as_str().is_some_and(ours)) {
+                api.delete(&format!("/keys/{}", k["id"].as_str().unwrap_or(""))).await?;
+            }
+            let _ = std::fs::remove_file(T3Link::path(home));
+            println!("removed clipx from T3 Code");
+        }
+        other => return Err(format!("unknown action {other}; use on or off")),
+    }
+    Ok(())
 }
 
 /// Stop through the service manager, then ask any server still answering to exit.
@@ -617,6 +753,23 @@ async fn prompt(q: &str) -> Option<String> {
     print!("{q}");
     std::io::stdout().flush().ok();
     read_line().await.ok().flatten()
+}
+
+/// Like `prompt`, without echoing what is typed.
+async fn prompt_secret(q: &str) -> Option<String> {
+    let tty = std::io::stdin().is_terminal();
+    let stty = |arg: &str| {
+        let _ = std::process::Command::new("stty").arg(arg).stdin(std::process::Stdio::inherit()).status();
+    };
+    if tty {
+        stty("-echo");
+    }
+    let got = prompt(q).await;
+    if tty {
+        stty("echo");
+        println!();
+    }
+    got
 }
 
 async fn confirm(q: &str) -> bool {
@@ -732,17 +885,46 @@ async fn add_accounts(home: &Path, api: &Api) -> Res {
     }
 }
 
-fn which(cmd: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .chain([util::home_dir().join(".local/bin")])
-        .map(|d| d.join(cmd))
-        .find(|p| p.is_file())
-}
-
 fn run_sh(script: &str, env: &[(&str, &str)]) -> bool {
     std::process::Command::new("sh").args(["-c", script]).envs(env.iter().copied()).status().is_ok_and(|s| s.success())
+}
+
+/// T3 Code needs libatomic on Linux, which slim images leave out. Offer to install it.
+async fn install_libatomic() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let found = ["/lib", "/usr/lib", "/lib64", "/usr/lib64"].iter().any(|d| {
+        std::fs::read_dir(d).into_iter().flatten().flatten().any(|e| {
+            let p = e.path();
+            p.join("libatomic.so.1").exists() || p.file_name().is_some_and(|n| n == "libatomic.so.1")
+        })
+    });
+    if found {
+        return;
+    }
+    let cmd = [
+        ("apt-get", "apt-get install -y libatomic1"),
+        ("dnf", "dnf install -y libatomic"),
+        ("yum", "yum install -y libatomic"),
+        ("zypper", "zypper install -y libatomic1"),
+        ("pacman", "pacman -S --noconfirm gcc-libs"),
+        ("apk", "apk add libatomic"),
+    ]
+    .into_iter()
+    .find(|(bin, _)| util::which(bin).is_some())
+    .map(|(_, c)| c);
+    let Some(cmd) = cmd else {
+        println!("note: T3 Code needs libatomic.so.1, which is not installed. install it with your package manager");
+        return;
+    };
+    let root = std::process::Command::new("id").arg("-u").output().is_ok_and(|o| o.stdout.starts_with(b"0"));
+    let sudo = if root { String::new() } else { "sudo ".into() };
+    let update = if cmd.starts_with("apt-get") { format!("{sudo}apt-get update -qq && ") } else { String::new() };
+    let full = format!("{update}{sudo}{cmd}");
+    if confirm(&format!("T3 Code needs libatomic, which is not installed. Install it now ({full})?")).await && !run_sh(&full, &[]) {
+        eprintln!("installing libatomic failed; T3 Code may not start");
+    }
 }
 
 /// Whether this machine is on T3 Connect. None when the `t3` command is missing or did not answer.
@@ -770,7 +952,7 @@ async fn setup_t3(api: &Api, interactive: bool) -> Result<Option<Value>, String>
         ("codex", "Codex", "curl -fsSL https://chatgpt.com/codex/install.sh | sh", &[("CODEX_NON_INTERACTIVE", "1")][..]),
     ];
     for (provider, (bin, name, script, env)) in ["claude", "codex"].into_iter().zip(tools) {
-        if !has(provider) || which(bin).is_some() {
+        if !has(provider) || util::which(bin).is_some() {
             continue;
         }
         if interactive && confirm(&format!("\nT3 runs these accounts through {name}, which is not installed. Install it?")).await {
@@ -781,6 +963,9 @@ async fn setup_t3(api: &Api, interactive: bool) -> Result<Option<Value>, String>
             println!("note: T3 needs {name} for these accounts. install it with: {script}");
         }
     }
+    if interactive {
+        install_libatomic().await;
+    }
     let t = api.post("/t3", json!({"enabled": true})).await?;
     if !interactive {
         return Ok(Some(t));
@@ -790,7 +975,8 @@ async fn setup_t3(api: &Api, interactive: bool) -> Result<Option<Value>, String>
     };
     match t3_linked() {
         Some(false) => {
-            println!("\nNow T3 Connect, so you can use this machine from app.t3.codes.\n");
+            println!("\nNow T3 Connect, so you can use this machine from app.t3.codes.");
+            println!("If T3 asks to install its relay client, answer y.\n");
             let _ = std::process::Command::new(&cli).arg("connect").status();
         }
         Some(true) if !t3::running() => {
@@ -909,6 +1095,7 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
     let interactive = std::io::stdin().is_terminal();
     let mut use_t3 = !args.no_t3 && t3::installed();
     if !args.no_t3 && !use_t3 && interactive && confirm("\nT3 Code is not installed. Install it? clipx adds your accounts to it, and app.t3.codes reaches it from anywhere.").await {
+        install_libatomic().await;
         use_t3 = run_sh("curl -fsSL https://t3.codes/install.sh | sh", &[]) && t3::installed();
         if !use_t3 {
             eprintln!("T3 Code did not install; carrying on without it");

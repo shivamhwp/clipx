@@ -16,9 +16,13 @@ One command does the rest:
 2. Signs you in to as many Claude, ChatGPT and Gemini accounts as you like. If CLIProxyAPI already has your logins, it offers to use those.
 3. Installs T3 Code, Claude Code and Codex if they're missing.
 4. Adds "Claude (clipx)" and "ChatGPT (clipx)" to T3 Code. If you have not picked a default model in T3, new threads use Claude (clipx).
-5. Runs `t3 connect`.
+5. Runs `t3 connect`. If T3 asks to install its relay client, answer y.
 
 Then open [app.t3.codes](https://app.t3.codes), sign in, and this machine is there.
+
+You sign in to each account in a browser, so setup asks a few questions. On a bare Linux image it also offers to install `libatomic1`, which T3 needs.
+
+`clipx update` gets the latest release and restarts clipx. T3's clipx providers follow on their own.
 
 ## T3 Code
 
@@ -26,6 +30,7 @@ The two providers point T3 at clipx on the same machine, each with its own clipx
 
 - `clipx t3 off` takes clipx out of T3. `clipx t3` puts it back. The dashboard's T3 Code page has the same switch.
 - `clipx t3 show` prints the values to add in T3 yourself instead.
+- T3 on a different machine from clipx: install clipx there with `curl -fsSL …/install.sh | CLIPX_NO_SETUP=1 sh`, then run `clipx t3 --server http://<clipx address>:8318`. It asks for the admin token from `~/.clipx/config.toml` on the clipx machine. Nothing runs in the background there, so run `clipx t3` again after adding a new kind of account. `clipx update` runs it for you.
 - Gemini accounts don't show up in T3 yet. T3 has no agent that can use them through clipx.
 
 ## Use it elsewhere
@@ -69,9 +74,9 @@ clipx status | accounts | env | logs
 clipx login claude | codex | gemini
 clipx import <path> [--link]
 clipx keys [create <name> | revoke <id>]
-clipx t3 [off | show]
+clipx t3 [off | show] [--server <url>]
 clipx connect tailscale | cloudflare | off
-clipx start | stop | restart | uninstall
+clipx start | stop | restart | update | uninstall
 ```
 
 Everything lives in `~/.clipx`.
