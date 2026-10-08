@@ -657,6 +657,8 @@ try:
     check("its key is named after the machine", len(far_keys) == 1, st["keys"])
     link = os.path.join(far_home, "t3-link.json")
     check("it remembers the clipx, privately", oct(os.stat(link).st_mode & 0o777) == "0o600" and json.load(open(link))["server"] == f"http://127.0.0.1:{PORT}")
+    out = subprocess.run([BIN, "status"], env=FAR, capture_output=True, text=True)
+    check("clipx status there says which clipx T3 uses", out.returncode == 0 and f"uses the clipx at http://127.0.0.1:{PORT}" in out.stdout, (out.stdout, out.stderr))
     before = os.stat(far_settings).st_mtime_ns
     out = subprocess.run([BIN, "t3"], env=dict(FAR, CLIPX_ADMIN_TOKEN=""), capture_output=True, text=True)
     s, st = req("GET", "/api/state", headers=A)

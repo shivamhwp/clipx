@@ -416,6 +416,12 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
     match cmd {
         Cmd::Setup(args) => setup(home, args).await,
         Cmd::Status { json } => {
+            if !config::config_path(home).exists()
+                && let Some(link) = T3Link::load(home)
+            {
+                println!("clipx does not run here. T3 Code here uses the clipx at {}; `clipx t3` refreshes it.", link.server);
+                return Ok(());
+            }
             let api = Api::new(home)?;
             let s = api.get("/state").await?;
             if json {
@@ -464,8 +470,10 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
             match action.unwrap_or(KeysCmd::List) {
                 KeysCmd::List => {
                     let s = api.get("/state").await?;
-                    for k in s["keys"].as_array().into_iter().flatten() {
-                        println!("{}  {:<16} {}…  used {}", k["id"].as_str().unwrap_or(""), k["name"].as_str().unwrap_or(""), k["prefix"].as_str().unwrap_or(""), ago(k["last_used"].as_u64().unwrap_or(0)));
+                    let keys = s["keys"].as_array().cloned().unwrap_or_default();
+                    let w = keys.iter().map(|k| k["name"].as_str().unwrap_or("").chars().count()).max().unwrap_or(0).max(16);
+                    for k in keys {
+                        println!("{}  {:<w$} {}…  used {}", k["id"].as_str().unwrap_or(""), k["name"].as_str().unwrap_or(""), k["prefix"].as_str().unwrap_or(""), ago(k["last_used"].as_u64().unwrap_or(0)));
                     }
                 }
                 KeysCmd::Create { name } => {
