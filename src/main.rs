@@ -174,7 +174,15 @@ fn main() {
             let data = data.unwrap_or_else(|| util::home_dir().join(".clipx-relay"));
             relay(tunnel::RelayOpts { listen, domain, public_url, secret, data })
         }
-        other => client_runtime().block_on(run_client(&home, other)),
+        other => {
+            // Rust ignores SIGPIPE, so `clipx status | head` would panic on a closed pipe.
+            // A command-line tool should just stop.
+            #[cfg(unix)]
+            unsafe {
+                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            }
+            client_runtime().block_on(run_client(&home, other))
+        }
     };
     if let Err(e) = result {
         eprintln!("clipx: {e}");
@@ -893,8 +901,39 @@ async fn add_accounts(home: &Path, api: &Api) -> Res {
     }
 }
 
-fn run_sh(script: &str, env: &[(&str, &str)]) -> bool {
-    std::process::Command::new("sh").args(["-c", script]).envs(env.iter().copied()).status().is_ok_and(|s| s.success())
+/// Set while setup runs another program in the terminal, such as an installer or `t3 connect`.
+static CHILD_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// During setup, Ctrl+C stops the program setup is running (T3 says to press it to skip
+/// its sign-in), and setup carries on. At setup's own prompts it quits as usual.
+fn ctrl_c_skips_children() {
+    #[cfg(unix)]
+    tokio::spawn(async {
+        let Ok(mut sig) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()) else {
+            return;
+        };
+        while sig.recv().await.is_some() {
+            if !CHILD_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+                println!();
+                std::process::exit(130);
+            }
+        }
+    });
+}
+
+/// Run a program in the terminal and wait for it. True when it succeeded.
+async fn run_child(mut cmd: std::process::Command) -> bool {
+    use std::sync::atomic::Ordering::SeqCst;
+    CHILD_RUNNING.store(true, SeqCst);
+    let r = tokio::task::spawn_blocking(move || cmd.status()).await;
+    CHILD_RUNNING.store(false, SeqCst);
+    matches!(r, Ok(Ok(s)) if s.success())
+}
+
+async fn run_sh(script: &str, env: &[(&str, &str)]) -> bool {
+    let mut cmd = std::process::Command::new("sh");
+    cmd.args(["-c", script]).envs(env.iter().copied());
+    run_child(cmd).await
 }
 
 /// T3 Code needs libatomic on Linux, which slim images leave out. Offer to install it.
@@ -930,7 +969,7 @@ async fn install_libatomic() {
     let sudo = if root { String::new() } else { "sudo ".into() };
     let update = if cmd.starts_with("apt-get") { format!("{sudo}apt-get update -qq && ") } else { String::new() };
     let full = format!("{update}{sudo}{cmd}");
-    if confirm(&format!("T3 Code needs libatomic, which is not installed. Install it now ({full})?")).await && !run_sh(&full, &[]) {
+    if confirm(&format!("T3 Code needs libatomic, which is not installed. Install it now ({full})?")).await && !run_sh(&full, &[]).await {
         eprintln!("installing libatomic failed; T3 Code may not start");
     }
 }
@@ -969,7 +1008,7 @@ async fn setup_t3(api: &Api, interactive: bool) -> Result<Option<Value>, String>
             continue;
         }
         if interactive && confirm(&format!("\nT3 runs these accounts through {name}, which is not installed. Install it?")).await {
-            if !run_sh(script, env) {
+            if !run_sh(script, env).await {
                 eprintln!("installing {name} failed; install it yourself, T3 needs it");
             }
         } else {
@@ -991,15 +1030,21 @@ async fn setup_t3(api: &Api, interactive: bool) -> Result<Option<Value>, String>
             let was_running = t3::running();
             println!("\nNow T3 Connect, so you can use this machine from app.t3.codes.");
             println!("If T3 asks to install its relay client, answer y.\n");
-            let _ = std::process::Command::new(&cli).arg("connect").status();
+            let mut connect = std::process::Command::new(&cli);
+            connect.arg("connect");
+            run_child(connect).await;
             // A T3 server that was already running only links to T3 Connect when it starts.
             let waiting = t3_connect_status().is_some_and(|v| v["authenticated"] == true && v["desired"] == true && v["linked"] != true);
             if was_running && waiting && confirm("\nT3 Code connects once it restarts, which stops anything it is running. Restart it now?").await {
-                let _ = std::process::Command::new(&cli).args(["service", "restart"]).status();
+                let mut restart = std::process::Command::new(&cli);
+                restart.args(["service", "restart"]);
+                run_child(restart).await;
             }
         }
         Some(true) if !t3::running() => {
-            let _ = std::process::Command::new(&cli).args(["service", "install"]).status();
+            let mut install = std::process::Command::new(&cli);
+            install.args(["service", "install"]);
+            run_child(install).await;
         }
         _ => {}
     }
@@ -1007,6 +1052,7 @@ async fn setup_t3(api: &Api, interactive: bool) -> Result<Option<Value>, String>
 }
 
 async fn setup(home: &Path, args: SetupArgs) -> Res {
+    ctrl_c_skips_children();
     std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
     let fresh = !config::config_path(home).exists();
     let mut cfg = if fresh { Config::new() } else { Config::load(home).map_err(|e| e.to_string())? };
@@ -1115,7 +1161,7 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
     let mut use_t3 = !args.no_t3 && t3::installed();
     if !args.no_t3 && !use_t3 && interactive && confirm("\nT3 Code is not installed. Install it? clipx adds your accounts to it, and app.t3.codes reaches it from anywhere.").await {
         install_libatomic().await;
-        use_t3 = run_sh("curl -fsSL https://t3.codes/install.sh | sh", &[]) && t3::installed();
+        use_t3 = run_sh("curl -fsSL https://t3.codes/install.sh | sh", &[]).await && t3::installed();
         if !use_t3 {
             eprintln!("T3 Code did not install; carrying on without it");
         }

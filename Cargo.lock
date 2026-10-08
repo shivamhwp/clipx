@@ -269,6 +269,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "http-body-util",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
