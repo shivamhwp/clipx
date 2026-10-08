@@ -115,6 +115,7 @@ textarea{height:auto;min-height:110px;padding:8px 10px;font:12.5px/1.5 var(--mon
 .code{position:relative;margin-top:10px}
 .code pre{margin:0;padding:10px 40px 10px 12px;background:var(--muted);border:1px solid var(--border);border-radius:var(--r);overflow:auto;line-height:1.55;white-space:pre}
 .code .btn{position:absolute;top:6px;right:6px;background:var(--muted)}
+.code.wrap pre{white-space:pre-wrap;word-break:break-all}
 .url{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}
 .url .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
@@ -248,6 +249,7 @@ const ICONS={
   keys:'<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>',
   usage:'<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
   connect:'<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  t3:'<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
   settings:'<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>',
   logout:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
   plus:'<path d="M5 12h14"/><path d="M12 5v14"/>',
@@ -269,10 +271,10 @@ const PROVIDERS={
   gemini:{name:'Gemini',sub:'Google account, through Gemini Code Assist',icon:'<svg viewBox="0 0 296 298"><defs><linearGradient id="gm" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#3186ff"/><stop offset=".5" stop-color="#4fa0ff"/><stop offset="1" stop-color="#9168f6"/></linearGradient></defs><path fill="url(#gm)" d="M141.201 4.886c2.282-6.17 11.042-6.071 13.184.148l5.985 17.37a184.004 184.004 0 0 0 111.257 113.049l19.304 6.997c6.143 2.227 6.156 10.91.02 13.155l-19.35 7.082a184.001 184.001 0 0 0-109.495 109.385l-7.573 20.629c-2.241 6.105-10.869 6.121-13.133.025l-7.908-21.296a184 184 0 0 0-109.02-108.658l-19.698-7.239c-6.102-2.243-6.118-10.867-.025-13.132l20.083-7.467A183.998 183.998 0 0 0 133.291 26.28l7.91-21.394Z"/></svg>'},
 };
 const prov=p=>PROVIDERS[p]||{name:p,sub:'',icon:ic('accounts')};
-const PAGES=[['overview','Overview'],['accounts','Accounts'],['keys','API keys'],['usage','Usage'],['connect','Remote access'],['settings','Settings']];
+const PAGES=[['overview','Overview'],['accounts','Accounts'],['keys','API keys'],['usage','Usage'],['t3','T3 Code'],['connect','Remote access'],['settings','Settings']];
 
 let TOKEN=localStorage.getItem('clipx_token')||'';
-let S=null,page='overview',flow=null,usageDays=7,usageData=null,reqs=null,lastFp='',connMode=null;
+let S=null,t3Data=null,page='overview',flow=null,usageDays=7,usageData=null,reqs=null,lastFp='',connMode=null;
 // A #token= link signs in, on first load or when opened in a tab that already has the page.
 function takeHashToken(){
   const m=location.hash.match(/token=([^&]+)/);
@@ -309,11 +311,11 @@ const base=()=>S.tunnel.connected&&S.tunnel.public_url?S.tunnel.public_url.repla
 // ---- components
 const btn=(label,onclick,cls='',icon='')=>`<button class="btn ${cls}" onclick="${onclick}">${icon?ic(icon):''}${label}</button>`;
 const copyBtn=(text,cls='ghost icon xs')=>`<button class="btn ${cls}" title="Copy" onclick="copy(${js(text)})">${ic('copy')}</button>`;
-const code=text=>`<div class="code"><pre>${esc(text)}</pre>${copyBtn(text)}</div>`;
+const code=(text,wrap)=>`<div class="code${wrap?' wrap':''}"><pre>${esc(text)}</pre>${copyBtn(text)}</div>`;
 const badge=(t,tone='')=>`<span class="badge ${tone}">${esc(t)}</span>`;
 const sw=(on,onclick,title='')=>`<button class="sw ${on?'on':''}" role="switch" aria-checked="${on}" title="${esc(title)}" onclick="${onclick}"></button>`;
 const sec=(title,body,acts='')=>`<section class="sec"><div class="sec-h"><h2>${title}</h2><div class="acts">${acts}</div></div><div class="group">${body}</div></section>`;
-const row=(title,desc,control='',extra='')=>`<div class="row"><div class="row-in"><div><div class="row-t">${title}</div>${desc?`<p class="row-d">${desc}</p>`:''}</div>${control?`<div class="row-c">${control}</div>`:'<div></div>'}</div>${extra?`<div class="row-x">${extra}</div>`:''}</div>`;
+const row=(title,desc,control='',extra='')=>`<div class="row"><div class="row-in"><div>${title?`<div class="row-t">${title}</div>`:''}${desc?`<p class="row-d">${desc}</p>`:''}</div>${control?`<div class="row-c">${control}</div>`:'<div></div>'}</div>${extra?`<div class="row-x">${extra}</div>`:''}</div>`;
 const urlCtl=u=>`<span class="url"><span class="mono">${esc(u)}</span>${copyBtn(u)}</span>`;
 function copy(t){navigator.clipboard.writeText(t).then(()=>toast('Copied'),()=>toast('Copy failed',1))}
 const STATUS={ready:['Ready','ok'],cooling:['Cooling down','warn'],'needs-login':['Needs login','bad'],disabled:['Off','']};
@@ -334,11 +336,12 @@ function route(){
   document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('on',a.dataset.p===page));
   connMode=null;render();$('#scroll').scrollTop=0;
   if(page==='usage')loadUsage();
+  if(page==='t3')loadT3();
 }
 window.onhashchange=()=>takeHashToken()?boot():route();
 // Re-render only when something visible changed, so controls are not swapped out under the cursor.
-const fingerprint=()=>JSON.stringify({...S,now:0,uptime:page==='overview'?Math.floor(S.uptime/60):0,rss:page==='overview'?Math.round(S.rss/1e5):0});
-async function refresh(){if(!TOKEN||document.hidden||$('#app').classList.contains('hidden'))return;try{S=await api('state');if(!busy()&&fingerprint()!==lastFp)render()}catch(e){}}
+const fingerprint=()=>JSON.stringify({...S,t3Data:page==='t3'?t3Data:0,now:0,uptime:page==='overview'?Math.floor(S.uptime/60):0,rss:page==='overview'?Math.round(S.rss/1e5):0});
+async function refresh(){if(!TOKEN||document.hidden||$('#app').classList.contains('hidden'))return;try{S=await api('state');if(page==='t3')await loadT3(true);if(!busy()&&fingerprint()!==lastFp)render()}catch(e){}}
 setInterval(refresh,3000);
 const busy=()=>{const a=document.activeElement;return a&&['INPUT','TEXTAREA','SELECT'].includes(a.tagName)&&!a.closest('#dlg')};
 async function reload(){S=await api('state');render()}
@@ -348,7 +351,7 @@ function render(){
   $('#ver').textContent='v'+S.version;
   const t=S.tunnel,c=S.connect;
   $('#conn').innerHTML=c.mode==='off'?`<i class="dot"></i><span>Local only</span>`:t.connected?`<i class="dot ok"></i><span title="${esc(t.public_url)}">${esc((t.public_url||'').replace(/^https?:\/\//,''))}</span>`:t.error?`<i class="dot bad"></i><span>Not connected</span>`:`<i class="dot warn"></i><span>Connecting…</span>`;
-  const [title,acts,body]=({overview,accounts,keys,usage,connect,settings}[page]||overview)();
+  const [title,acts,body]=({overview,accounts,keys,usage,t3,connect,settings}[page]||overview)();
   $('#title').textContent=title;$('#actions').innerHTML=acts||'';$('#main').innerHTML=body;
 }
 
@@ -504,6 +507,24 @@ async function saveConnect(){
   if(mode==='tailscale'){body.ts_port=+$('#tsport').value;body.tailnet_only=$('#tsonly').classList.contains('on')}
   try{await api('connect',{method:'PATCH',body});connMode=null;toast(mode==='off'?'Remote access off':'Saved, connecting…');setTimeout(refresh,1500);setTimeout(refresh,5000)}catch(e){toast(e.message,1)}
 }
+
+async function loadT3(quiet){try{t3Data=await api('t3');if(!quiet&&page==='t3')render()}catch(e){}}
+function t3(){
+  const d=t3Data;
+  if(!d)return ['T3 Code','','<div class="empty">Loading…</div>'];
+  const on=d.enabled,added=d.added||[];
+  const st=!d.installed?badge('Not installed'):!on?badge('Off'):d.error?badge('Problem','bad'):added.length?badge('Added','ok'):badge('Waiting for an account','warn');
+  const desc=!d.installed?'Install T3 Code from <a class="link" href="https://t3.codes" target="_blank" rel="noopener">t3.codes</a>, then turn this on.'
+    :d.error&&on?`<span style="color:var(--efg)">${esc(d.error)}</span>`
+    :on?(added.length?`T3 has ${added.map(esc).join(' and ')}. Accounts you add here work there right away.`:'clipx adds its providers to T3 as soon as you add an account.')
+    :'Adds Claude (clipx) and ChatGPT (clipx) to T3 Code on this machine, so every account here works in T3.';
+  const manual=(d.manual||[]).map(m=>row(esc(m.name),'Provider type: '+esc(m.driver),'',code(m.environment.map(e=>e.name+'='+e.value).join('\n'))+(m.launch_args?'<p class="row-d" style="margin:10px 0 6px">Launch arguments</p>'+code(m.launch_args,1):''))).join('');
+  return ['T3 Code','',`
+  ${sec('Providers',row(st,desc,d.installed?sw(on,`setT3(${!on})`,on?'Remove from T3':'Add to T3'):''))}
+  ${sec('Set it up yourself',row('','In T3, open Settings, then Providers, and add these. Make a key on the <a class="link" href="#keys">API keys</a> page and use it for &lt;your clipx key&gt;.')+manual)}
+  <div class="note">${ic('info')}<span>To use T3 away from this machine, run <code>t3 connect</code> here once, then open <a class="link" href="https://app.t3.codes" target="_blank" rel="noopener">app.t3.codes</a>.</span></div>`];
+}
+async function setT3(on){try{t3Data=await api('t3',{method:'POST',body:{enabled:on}});await reload();toast(on?'Added to T3 Code':'Removed from T3 Code')}catch(e){toast(e.message,1)}}
 
 function settings(){
   return ['Settings','',`

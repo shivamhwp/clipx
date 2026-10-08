@@ -52,6 +52,9 @@ elif a[0] in ("funnel", "serve"):
 """)
 os.chmod(os.path.join(FAKE_BIN, "tailscale"), 0o755)
 ENV["PATH"] = FAKE_BIN + os.pathsep + ENV.get("PATH", "")
+# T3 Code's data folder, so the T3 integration never touches a real one.
+T3 = os.path.join(HOME, "t3")
+ENV["T3CODE_HOME"] = T3
 PROCS = []
 PASSED = []
 
@@ -399,6 +402,16 @@ try:
     new_acc = json.load(open(os.path.join(HOME, "accounts", r["account"]["id"] + ".json")))
     check("gemini login ran code assist setup", new_acc["project_id"] == "proj-new-login" and new_acc["tier"] == "Free", new_acc)
 
+    # The terminal login: clipx prints the sign-in link and reads the pasted code.
+    for provider, code, want in [("claude", "claude-code-good", {"email": "new@example.com", "org": "New Org"}),
+                                 ("codex", "codex-code-good", {"email": "new@example.com", "account_id": "acct-123", "plan": "pro"})]:
+        out = subprocess.run([BIN, "login", provider], env=ENV, input=code + "\n", capture_output=True, text=True, timeout=30)
+        s, st = req("GET", "/api/state", headers=A)
+        acc = next((a for a in st["accounts"] if a["provider"] == provider and a["email"] == "new@example.com"), None)
+        saved = acc and json.load(open(os.path.join(HOME, "accounts", acc["id"] + ".json")))
+        check(f"{provider} login from the terminal", out.returncode == 0 and "added " in out.stdout and saved and all(saved.get(k) == v for k, v in want.items()), (out.stdout, out.stderr, saved))
+        req("DELETE", f"/api/accounts/{acc['id']}", headers=A)
+
     s, r = req("POST", "/api/login/start", {"provider": "claude"}, A)
     s, r = req("POST", "/api/login/complete", {"flow_id": r["flow_id"], "callback": "used-code"}, A)
     check("rejected login code says what to do", s >= 400 and r["error"].startswith("That code didn't work"), (s, r))
@@ -548,6 +561,82 @@ try:
     s, u = req("GET", "/api/usage?days=1", headers=A)
     total = sum(t["requests"] for t in u["by_account"].values())
     check("state survives restart", len(st["accounts"]) == 10 and total > 1000, (len(st["accounts"]), total))
+
+    # T3 Code: clipx adds itself to T3's settings and keeps the entries in step.
+    settings_path = os.path.join(T3, "userdata", "settings.json")
+    def t3_settings():
+        return json.load(open(settings_path))
+    def t3_env(st, inst):
+        return {e["name"]: e for e in st["providerInstances"][inst]["environment"]}
+    def wait_for(cond, secs=12):
+        for _ in range(secs * 10):
+            try:
+                if cond():
+                    return True
+            except (OSError, KeyError, ValueError):
+                pass
+            time.sleep(0.1)
+        return False
+    import shutil
+    if shutil.which("t3") is None:
+        s, r = req("POST", "/api/t3", {"enabled": True}, headers=A)
+        check("t3 refused when T3 is not installed", s == 400 and "not installed" in r["error"], r)
+    os.makedirs(os.path.dirname(settings_path))
+    mine = {"theme": "dark", "defaultModelSelection": {"instanceId": "claude-p", "model": "claude-opus-5-5"},
+            "providerInstances": {"claude-p": {"driver": "claudeAgent", "environment": [{"name": "X", "value": "1", "sensitive": False}]}}}
+    json.dump(mine, open(settings_path, "w"), indent=2)
+    os.chmod(settings_path, 0o644)
+    out = subprocess.run([BIN, "t3"], env=ENV, capture_output=True, text=True)
+    check("clipx t3 adds both providers", out.returncode == 0 and "Claude (clipx) and ChatGPT (clipx)" in out.stdout, (out.stdout, out.stderr))
+    st3 = t3_settings()
+    check("t3 keeps the user's settings", st3["theme"] == "dark" and st3["defaultModelSelection"]["instanceId"] == "claude-p"
+          and st3["providerInstances"]["claude-p"] == mine["providerInstances"]["claude-p"], st3)
+    check("t3 picks a text model only when none was set", st3["textGenerationModelSelection"]["instanceId"] == "clipx-claude", st3)
+    check("t3 keeps the file's permissions", oct(os.stat(settings_path).st_mode & 0o777) == "0o644")
+    check("t3 backs up the original once", json.load(open(settings_path + ".before-clipx")) == mine)
+    env = t3_env(st3, "clipx-claude")
+    check("claude provider points at clipx", env["ANTHROPIC_BASE_URL"]["value"] == f"http://127.0.0.1:{PORT}" and env["ANTHROPIC_AUTH_TOKEN"]["sensitive"], env)
+    t3key = env["ANTHROPIC_AUTH_TOKEN"]["value"]
+    s, r = req("POST", "/v1/messages", {"model": "claude-sonnet-5-5", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]}, headers={"authorization": "Bearer " + t3key})
+    check("the key clipx gave T3 works", s == 200, (s, r))
+    codex_args = st3["providerInstances"]["clipx-codex"]["config"]["launchArgs"]
+    check("codex provider points at clipx", f"model_providers.clipx.base_url=http://127.0.0.1:{PORT}/v1" in codex_args and "env_key=CLIPX_API_KEY" in codex_args, codex_args)
+    s, r = req("POST", "/v1/responses", {"model": "gpt-5.6-sol", "input": "hi"}, headers={"authorization": "Bearer " + t3_env(st3, "clipx-codex")["CLIPX_API_KEY"]["value"]})
+    check("the codex key works too", s == 200, (s, str(r)[:200]))
+    # What T3 does on its next save: move the key into its secret store, and the user renames the provider.
+    st3["providerInstances"]["clipx-claude"]["displayName"] = "Mine"
+    for e in st3["providerInstances"]["clipx-claude"]["environment"]:
+        if e["name"] == "ANTHROPIC_AUTH_TOKEN":
+            e.update(value="", valueRedacted=True)
+    json.dump(st3, open(settings_path, "w"), indent=2)
+    before = os.stat(settings_path).st_mtime_ns
+    time.sleep(6)
+    check("t3 sync leaves a settled file alone", os.stat(settings_path).st_mtime_ns == before)
+    s, st = req("GET", "/api/state", headers=A)
+    kid = next(k["id"] for k in st["keys"] if k["name"] == "T3 Code (Claude)")
+    req("DELETE", f"/api/keys/{kid}", headers=A)
+    check("revoking T3's key gives T3 a new one", wait_for(lambda: t3_env(t3_settings(), "clipx-claude")["ANTHROPIC_AUTH_TOKEN"]["value"].startswith("sk-clipx-")))
+    st3 = t3_settings()
+    check("the new key keeps the user's rename", st3["providerInstances"]["clipx-claude"]["displayName"] == "Mine")
+    s, r = req("POST", "/v1/messages", {"model": "claude-sonnet-5-5", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]}, headers={"authorization": "Bearer " + t3_env(st3, "clipx-claude")["ANTHROPIC_AUTH_TOKEN"]["value"]})
+    check("the replacement key works", s == 200, (s, r))
+    s, t = req("GET", "/api/t3", headers=A)
+    check("t3 status lists both and how to do it by hand", t["added"] == ["Claude (clipx)", "ChatGPT (clipx)"] and len(t["manual"]) == 2 and t["enabled"], t)
+    out = subprocess.run([BIN, "t3", "show"], env=ENV, capture_output=True, text=True)
+    check("clipx t3 show prints the values", f"ANTHROPIC_BASE_URL=http://127.0.0.1:{PORT}" in out.stdout and "launch arguments: -c model_provider=clipx" in out.stdout, out.stdout)
+    # Removing every ChatGPT account takes ChatGPT (clipx) out of T3.
+    for a in st["accounts"]:
+        if a["provider"] == "codex":
+            req("DELETE", f"/api/accounts/{a['id']}", headers=A)
+    check("no chatgpt accounts, no chatgpt provider", wait_for(lambda: "clipx-codex" not in t3_settings()["providerInstances"]))
+    out = subprocess.run([BIN, "t3", "off"], env=ENV, capture_output=True, text=True)
+    st3 = t3_settings()
+    s, st = req("GET", "/api/state", headers=A)
+    check("clipx t3 off removes clipx and nothing else", out.returncode == 0 and set(st3["providerInstances"]) == {"claude-p"} and st3["theme"] == "dark"
+          and st3["defaultModelSelection"]["instanceId"] == "claude-p" and "textGenerationModelSelection" not in st3, st3)
+    check("clipx t3 off revokes T3's keys", not any(k["name"].startswith("T3 Code") for k in st["keys"]), st["keys"])
+    time.sleep(6)
+    check("off stays off", "clipx-claude" not in t3_settings()["providerInstances"])
 
     print(f"\nall {len(PASSED)} checks passed")
 finally:

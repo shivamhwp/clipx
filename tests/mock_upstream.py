@@ -11,9 +11,11 @@ Token behaviour (Bearer value):
   gemini-limited      429 RESOURCE_EXHAUSTED with a google.rpc.RetryInfo (retryDelay: 37s)
   gemini-dead         401
   gemini-old          401 until refreshed (refresh gives gemini-ok-refreshed)
+Login codes that work: claude-code-good, codex-code-good, gemini-code-good.
 Every request is appended to LOG and readable at GET /_log, cleared by POST /_reset.
 """
 
+import base64
 import json
 import sys
 import threading
@@ -85,11 +87,19 @@ class H(BaseHTTPRequestHandler):
             body = json.loads(raw)
             if body.get("refresh_token") == "claude-rt-good":
                 return self.send(200, {"access_token": "claude-ok-refreshed", "refresh_token": "claude-rt-good-2", "expires_in": 28800})
+            if body.get("grant_type") == "authorization_code" and body.get("code") == "claude-code-good":
+                return self.send(200, {"access_token": "claude-ok-new", "refresh_token": "claude-rt-good", "expires_in": 28800,
+                                       "account": {"email_address": "new@example.com", "uuid": "u-new"}, "organization": {"name": "New Org"}})
             return self.send(400, {"error": "invalid_grant"})
         if self.path == "/oauth/codex":
             form = dict(urllib.parse.parse_qsl(raw.decode()))
             if form.get("refresh_token") == "codex-rt-good":
                 return self.send(200, {"access_token": "codex-ok-refreshed", "refresh_token": "codex-rt-good-2", "expires_in": 3600})
+            if form.get("grant_type") == "authorization_code" and form.get("code") == "codex-code-good":
+                claims = {"email": "new@example.com", "https://api.openai.com/auth": {"chatgpt_account_id": "acct-123", "chatgpt_plan_type": "pro"}}
+                part = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+                return self.send(200, {"access_token": "codex-ok-new", "refresh_token": "codex-rt-good", "expires_in": 3600,
+                                       "id_token": part({"alg": "none"}) + "." + part(claims) + ".sig"})
             return self.send(400, {"error": "invalid_grant"})
         if self.path == "/oauth/gemini":
             form = dict(urllib.parse.parse_qsl(raw.decode()))
@@ -183,7 +193,7 @@ class H(BaseHTTPRequestHandler):
             w.write(sse("response.output_text.delta", {"type": "response.output_text.delta", "delta": "hi"}))
             w.write(sse("response.output_item.done", {"type": "response.output_item.done", "item": item}))
             out = []
-        w.write(sse("response.completed", {"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "output": out, "usage": {"input_tokens": 20, "output_tokens": 4, "input_tokens_details": {"cached_tokens": 8}}}}))
+        w.write(sse("response.completed", {"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "output": out, "usage": {"input_tokens": 20, "output_tokens": 4, "total_tokens": 24, "input_tokens_details": {"cached_tokens": 8}, "output_tokens_details": {"reasoning_tokens": 0}}}}))
         w.flush()
 
     def gemini(self, raw):

@@ -118,6 +118,9 @@ pub struct Config {
     pub workers: Option<usize>,
     #[serde(default)]
     pub connect: ConnectConfig,
+    /// Keep "Claude (clipx)" and "ChatGPT (clipx)" in T3 Code's providers.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub t3: bool,
     #[serde(default, skip_serializing_if = "is_default_upstream")]
     pub upstream: Upstream,
 }
@@ -150,6 +153,7 @@ impl Config {
             claude_code_version: None,
             workers: None,
             connect: ConnectConfig::default(),
+            t3: false,
             upstream: Upstream::default(),
         }
     }

@@ -80,4 +80,9 @@ case ":$PATH:" in
 esac
 
 say ""
+# Under `curl … | sh` the script itself is standard input. Hand setup the terminal so it
+# can sign in to accounts and connect T3.
+if [ ! -t 0 ] && (: </dev/tty) 2>/dev/null; then
+  exec "$dir/clipx" setup "$@" </dev/tty
+fi
 exec "$dir/clipx" setup "$@"

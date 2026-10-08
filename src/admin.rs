@@ -34,6 +34,7 @@ pub fn router(app: Arc<App>) -> Router<Arc<App>> {
         .route("/keys/{id}", axum::routing::delete(revoke_key))
         .route("/settings", patch(settings))
         .route("/connect", patch(connect))
+        .route("/t3", get(t3_status).post(t3_set))
         .route("/shutdown", post(shutdown))
         .layer(axum::middleware::from_fn_with_state(app, require_admin));
     Router::new()
@@ -104,6 +105,7 @@ async fn state(State(app): State<Arc<App>>, headers: HeaderMap) -> Json<Value> {
         "tunnel": tunnel,
         "connect": {"mode": cfg.connect.mode, "relay": cfg.connect.relay, "name": cfg.connect.name, "ts_port": cfg.connect.ts_port.unwrap_or(443), "tailnet_only": cfg.connect.tailnet_only},
         "via_tunnel": tunnel_header(&headers),
+        "t3": {"enabled": cfg.t3, "installed": crate::t3::installed()},
         "recent": app.stats.recent(15),
     }))
 }
@@ -270,6 +272,43 @@ async fn settings(State(app): State<Arc<App>>, Json(r): Json<SettingsReq>) -> Re
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
+}
+
+async fn t3_status(State(app): State<Arc<App>>) -> Json<Value> {
+    Json(tokio::task::spawn_blocking(move || crate::t3::status(&app)).await.unwrap_or_default())
+}
+
+#[derive(Deserialize)]
+struct T3Req {
+    enabled: bool,
+}
+
+/// Turn the T3 Code providers on (added now, then kept in step) or off (taken out of T3).
+async fn t3_set(State(app): State<Arc<App>>, Json(r): Json<T3Req>) -> Response {
+    // Off first, so the background sync cannot add the providers back while they go.
+    let was = std::mem::replace(&mut app.cfg.write().unwrap().t3, false);
+    let a = app.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        if r.enabled {
+            if !crate::t3::installed() {
+                return Err("T3 Code is not installed on this machine. Install it from t3.codes first.".to_string());
+            }
+            crate::t3::sync(&a).map(|_| ())
+        } else {
+            crate::t3::remove(&a)
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    if let Err(e) = res {
+        app.cfg.write().unwrap().t3 = was && r.enabled;
+        return err(StatusCode::BAD_REQUEST, &e);
+    }
+    app.cfg.write().unwrap().t3 = r.enabled;
+    if let Err(e) = app.save_config() {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+    }
+    Json(tokio::task::spawn_blocking(move || crate::t3::status(&app)).await.unwrap_or_default()).into_response()
 }
 
 async fn shutdown(State(app): State<Arc<App>>) -> Json<Value> {

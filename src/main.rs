@@ -8,6 +8,7 @@ mod proxy;
 mod service;
 mod sse;
 mod store;
+mod t3;
 mod translate;
 mod tunnel;
 mod usage;
@@ -18,6 +19,7 @@ use axum::routing::any;
 use clap::{Parser, Subcommand};
 use config::{Config, Strategy, TunnelMode};
 use serde_json::{Value, json};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -103,6 +105,9 @@ enum Cmd {
         #[arg(short, long)]
         follow: bool,
     },
+    /// Add clipx to T3 Code as "Claude (clipx)" and "ChatGPT (clipx)": on (default), off,
+    /// or show (the values to enter in T3 yourself).
+    T3 { action: Option<String> },
     /// Remove the background service (keeps ~/.clipx).
     Uninstall,
 }
@@ -141,6 +146,9 @@ struct SetupArgs {
     /// Write config only; do not install or start a service.
     #[arg(long)]
     no_service: bool,
+    /// Do not add clipx to T3 Code.
+    #[arg(long)]
+    no_t3: bool,
 }
 
 fn main() {
@@ -201,6 +209,7 @@ fn serve(home: &Path) -> Res {
         let router = build_router(app.clone());
         tokio::spawn(oauth::refresh_loop(app.clone()));
         tokio::spawn(tunnel::supervise(app.clone(), router.clone()));
+        tokio::spawn(t3::sync_loop(app.clone()));
         let flusher = app.clone();
         tokio::spawn(async move {
             let mut t = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -411,6 +420,11 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
             }
             println!("dashboard  {}/  (admin token in {})", base_url(&s, false), config::config_path(home).display());
             println!("routing    {}", s["strategy"].as_str().unwrap_or(""));
+            if s["t3"]["enabled"] == true {
+                let t = api.get("/t3").await?;
+                let added: Vec<&str> = t["added"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                println!("T3 Code    {}", if added.is_empty() { "on; providers appear once you add an account".into() } else { added.join(", ") });
+            }
             println!("accounts");
             print_accounts(&s);
             Ok(())
@@ -424,35 +438,11 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
         Cmd::Import { path, no_refresh, link } => {
             let api = Api::new(home)?;
             let files: Vec<PathBuf> = if path.is_dir() {
-                let mut v: Vec<PathBuf> = std::fs::read_dir(&path).map_err(|e| e.to_string())?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
-                v.sort();
-                v
+                json_files(&path)
             } else {
                 vec![path]
             };
-            let mut n = 0;
-            for f in files {
-                let Ok(mut v) = std::fs::read(&f).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<Value>(&b).map_err(|e| e.to_string())) else {
-                    eprintln!("skip {}: not json", f.display());
-                    continue;
-                };
-                if no_refresh {
-                    v["no_refresh"] = json!(true);
-                }
-                if link {
-                    let abs = std::fs::canonicalize(&f).map_err(|e| e.to_string())?;
-                    v["linked"] = json!(abs.to_string_lossy());
-                }
-                match api.post("/accounts/import", v).await {
-                    Ok(r) => {
-                        for a in r["accounts"].as_array().into_iter().flatten() {
-                            println!("imported {} ({})", a["label"].as_str().unwrap_or(""), a["provider"].as_str().unwrap_or(""));
-                            n += 1;
-                        }
-                    }
-                    Err(e) => eprintln!("skip {}: {e}", f.display()),
-                }
-            }
+            let n = import_files(&api, files, no_refresh, link).await;
             println!("{n} account(s) imported");
             Ok(())
         }
@@ -522,7 +512,48 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
             service::logs(home, follow);
             Ok(())
         }
+        Cmd::T3 { action } => {
+            let api = Api::new(home)?;
+            match action.as_deref().unwrap_or("on") {
+                "on" | "add" => {
+                    let t = api.post("/t3", json!({"enabled": true})).await?;
+                    print_t3(&t);
+                    if t3_linked() == Some(false) {
+                        println!("this machine is not on T3 Connect yet. run `t3 connect` to reach it from app.t3.codes");
+                    }
+                }
+                "off" | "remove" => {
+                    api.post("/t3", json!({"enabled": false})).await?;
+                    println!("removed clipx from T3 Code");
+                }
+                "show" => {
+                    let t = api.get("/t3").await?;
+                    println!("To add clipx to T3 Code yourself: Settings, Providers, add a provider, then enter these.");
+                    println!("Make a key with `clipx keys create t3` and use it in place of <your clipx key>.");
+                    for m in t["manual"].as_array().into_iter().flatten() {
+                        println!();
+                        println!("{}  (type: {})", m["name"].as_str().unwrap_or(""), m["driver"].as_str().unwrap_or(""));
+                        for e in m["environment"].as_array().into_iter().flatten() {
+                            println!("  {}={}{}", e["name"].as_str().unwrap_or(""), e["value"].as_str().unwrap_or(""), if e["sensitive"] == true { "   (secret)" } else { "" });
+                        }
+                        if let Some(a) = m["launch_args"].as_str() {
+                            println!("  launch arguments: {a}");
+                        }
+                    }
+                }
+                other => return Err(format!("unknown action {other}; use on, off or show")),
+            }
+            Ok(())
+        }
         Cmd::Uninstall => {
+            if let Ok(api) = Api::new(home)
+                && api.get("/state").await.is_ok_and(|s| s["t3"]["enabled"] == true)
+            {
+                match api.post("/t3", json!({"enabled": false})).await {
+                    Ok(_) => println!("removed clipx from T3 Code"),
+                    Err(e) => eprintln!("could not remove clipx from T3 Code: {e}"),
+                }
+            }
             service::uninstall(home);
             println!("service removed. your data is still in {}", home.display());
             Ok(())
@@ -570,6 +601,61 @@ async fn connect(api: &Api, body: Value) -> Res {
     Err(format!("not connected yet: {}", s["tunnel"]["error"].as_str().unwrap_or("no answer")))
 }
 
+/// Read one line from the terminal on a thread, so the caller can wait on other things too.
+/// Returns None at end of input.
+fn read_line() -> tokio::sync::oneshot::Receiver<Option<String>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let got = std::io::stdin().read_line(&mut line).ok().filter(|n| *n > 0).map(|_| line.trim().to_string());
+        let _ = tx.send(got);
+    });
+    rx
+}
+
+async fn prompt(q: &str) -> Option<String> {
+    print!("{q}");
+    std::io::stdout().flush().ok();
+    read_line().await.ok().flatten()
+}
+
+async fn confirm(q: &str) -> bool {
+    prompt(&format!("{q} [Y/n] ")).await.is_some_and(|a| !a.to_ascii_lowercase().starts_with('n'))
+}
+
+fn json_files(dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+    v.sort();
+    v
+}
+
+async fn import_files(api: &Api, files: Vec<PathBuf>, no_refresh: bool, link: bool) -> usize {
+    let mut n = 0;
+    for f in files {
+        let Ok(mut v) = std::fs::read(&f).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<Value>(&b).map_err(|e| e.to_string())) else {
+            eprintln!("skip {}: not json", f.display());
+            continue;
+        };
+        if no_refresh {
+            v["no_refresh"] = json!(true);
+        }
+        if link {
+            let abs = std::fs::canonicalize(&f).unwrap_or(f.clone());
+            v["linked"] = json!(abs.to_string_lossy());
+        }
+        match api.post("/accounts/import", v).await {
+            Ok(r) => {
+                for a in r["accounts"].as_array().into_iter().flatten() {
+                    println!("imported {} ({})", a["label"].as_str().unwrap_or(""), a["provider"].as_str().unwrap_or(""));
+                    n += 1;
+                }
+            }
+            Err(e) => eprintln!("skip {}: {e}", f.display()),
+        }
+    }
+    n
+}
+
 async fn login(home: &Path, provider: &str) -> Res {
     let api = Api::new(home)?;
     let r = api.post("/login/start", json!({"provider": provider})).await?;
@@ -577,35 +663,142 @@ async fn login(home: &Path, provider: &str) -> Res {
     println!("open this url in a browser and sign in:\n\n  {}\n", r["url"].as_str().unwrap_or(""));
     println!("{}", r["hint"].as_str().unwrap_or(""));
     print!("paste here: ");
-    use std::io::Write;
     std::io::stdout().flush().ok();
-    // Read the paste on a thread so a local browser callback can finish the flow meanwhile.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(1);
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_ok() {
-            let _ = tx.blocking_send(line);
-        }
-    });
+    // A local browser callback can finish the flow while we wait for a paste.
+    let mut line = read_line();
     loop {
         tokio::select! {
-            line = rx.recv() => {
-                let line = line.unwrap_or_default();
-                if line.trim().is_empty() {
+            got = &mut line => {
+                let Some(text) = got.ok().flatten().filter(|t| !t.is_empty()) else {
                     return Err("nothing pasted".into());
-                }
-                let r = api.post("/login/complete", json!({"flow_id": flow, "callback": line.trim()})).await?;
+                };
+                let r = api.post("/login/complete", json!({"flow_id": flow, "callback": text})).await?;
                 println!("added {}", r["account"]["label"].as_str().unwrap_or(""));
                 return Ok(());
             }
             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
                 if api.get(&format!("/login/status/{flow}")).await?["done"] == true {
-                    println!("\nlogged in through the browser callback");
+                    println!("\nsigned in through the browser. press Enter to continue");
+                    let _ = line.await;
                     return Ok(());
                 }
             }
         }
     }
+}
+
+/// Offer CLIProxyAPI's logins, then let the user sign in to as many accounts as they like.
+async fn add_accounts(home: &Path, api: &Api) -> Res {
+    let cpa = util::home_dir().join(".cli-proxy-api");
+    let files = json_files(&cpa);
+    let state = api.get("/state").await?;
+    let has_linked = state["accounts"].as_array().into_iter().flatten().any(|a| a["linked"].is_string());
+    if !files.is_empty()
+        && !has_linked
+        && confirm(&format!(
+            "\nCLIProxyAPI has {} login(s) in {}. Use them in clipx too? clipx reads them and never refreshes them, so CLIProxyAPI keeps working.",
+            files.len(),
+            cpa.display()
+        ))
+        .await
+    {
+        import_files(api, files, false, true).await;
+    }
+    loop {
+        let s = api.get("/state").await?;
+        println!("\naccounts");
+        if s["accounts"].as_array().is_none_or(|a| a.is_empty()) {
+            println!("  none yet");
+        } else {
+            print_accounts(&s);
+        }
+        let Some(pick) = prompt("add an account: 1 Claude, 2 ChatGPT, 3 Gemini, or press Enter when done: ").await else {
+            return Ok(());
+        };
+        let provider = match pick.to_ascii_lowercase().as_str() {
+            "" => return Ok(()),
+            "1" | "claude" => "claude",
+            "2" | "chatgpt" | "codex" => "codex",
+            "3" | "gemini" => "gemini",
+            _ => {
+                println!("type 1, 2 or 3, or press Enter to finish");
+                continue;
+            }
+        };
+        println!();
+        if let Err(e) = login(home, provider).await {
+            eprintln!("{e}");
+        }
+    }
+}
+
+fn which(cmd: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .chain([util::home_dir().join(".local/bin")])
+        .map(|d| d.join(cmd))
+        .find(|p| p.is_file())
+}
+
+fn run_sh(script: &str, env: &[(&str, &str)]) -> bool {
+    std::process::Command::new("sh").args(["-c", script]).envs(env.iter().copied()).status().is_ok_and(|s| s.success())
+}
+
+/// Whether this machine is on T3 Connect. None when the `t3` command is missing or did not answer.
+fn t3_linked() -> Option<bool> {
+    let out = std::process::Command::new(t3::cli()?).args(["connect", "status", "--json"]).stderr(std::process::Stdio::null()).output().ok()?;
+    serde_json::from_slice::<Value>(&out.stdout).ok().map(|v| v["linked"] == true)
+}
+
+fn print_t3(t: &Value) {
+    let added: Vec<&str> = t["added"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if added.is_empty() {
+        println!("T3 Code      on. clipx adds its providers there once you add an account");
+    } else {
+        println!("T3 Code      added {}", added.join(" and "));
+    }
+}
+
+/// Everything T3 needs to run clipx's providers, then T3 Connect so app.t3.codes can reach
+/// this machine.
+async fn setup_t3(api: &Api, interactive: bool) -> Result<Option<Value>, String> {
+    let state = api.get("/state").await?;
+    let has = |p: &str| state["accounts"].as_array().into_iter().flatten().any(|a| a["provider"] == p);
+    let tools = [
+        ("claude", "Claude Code", "curl -fsSL https://claude.ai/install.sh | bash", &[][..]),
+        ("codex", "Codex", "curl -fsSL https://chatgpt.com/codex/install.sh | sh", &[("CODEX_NON_INTERACTIVE", "1")][..]),
+    ];
+    for (provider, (bin, name, script, env)) in ["claude", "codex"].into_iter().zip(tools) {
+        if !has(provider) || which(bin).is_some() {
+            continue;
+        }
+        if interactive && confirm(&format!("\nT3 runs these accounts through {name}, which is not installed. Install it?")).await {
+            if !run_sh(script, env) {
+                eprintln!("installing {name} failed; install it yourself, T3 needs it");
+            }
+        } else {
+            println!("note: T3 needs {name} for these accounts. install it with: {script}");
+        }
+    }
+    let t = api.post("/t3", json!({"enabled": true})).await?;
+    if !interactive {
+        return Ok(Some(t));
+    }
+    let Some(cli) = t3::cli() else {
+        return Ok(Some(t));
+    };
+    match t3_linked() {
+        Some(false) => {
+            println!("\nNow T3 Connect, so you can use this machine from app.t3.codes.\n");
+            let _ = std::process::Command::new(&cli).arg("connect").status();
+        }
+        Some(true) if !t3::running() => {
+            let _ = std::process::Command::new(&cli).args(["service", "install"]).status();
+        }
+        _ => {}
+    }
+    Ok(Some(t))
 }
 
 async fn setup(home: &Path, args: SetupArgs) -> Res {
@@ -713,20 +906,58 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
             println!("remote       not up yet ({}); it keeps retrying", state["tunnel"]["error"].as_str().unwrap_or("no answer"));
         }
     }
+    let interactive = std::io::stdin().is_terminal();
+    let mut use_t3 = !args.no_t3 && t3::installed();
+    if !args.no_t3 && !use_t3 && interactive && confirm("\nT3 Code is not installed. Install it? clipx adds your accounts to it, and app.t3.codes reaches it from anywhere.").await {
+        use_t3 = run_sh("curl -fsSL https://t3.codes/install.sh | sh", &[]) && t3::installed();
+        if !use_t3 {
+            eprintln!("T3 Code did not install; carrying on without it");
+        }
+    }
+    if interactive {
+        add_accounts(home, &api).await?;
+    }
+    let t3_state = if use_t3 {
+        setup_t3(&api, interactive).await.unwrap_or_else(|e| {
+            eprintln!("could not add clipx to T3 Code: {e}");
+            None
+        })
+    } else {
+        None
+    };
+
+    let state = api.get("/state").await?;
     let base = base_url(&state, false);
-    println!("local        {}", state["local_url"].as_str().unwrap_or(""));
     println!();
+    println!("clipx        {}", state["local_url"].as_str().unwrap_or(""));
+    if state["tunnel"]["connected"] == true {
+        println!("remote       {}", state["tunnel"]["public_url"].as_str().unwrap_or(""));
+    }
     println!("dashboard    {base}/#token={}", cfg.admin_token);
     println!("admin token  {}", cfg.admin_token);
     match &new_key {
         Some(k) => println!("api key      {k}   (shown once)"),
         None => println!("api key      (existing keys kept; make another with `clipx keys create`)"),
     }
-    println!();
-    if state["accounts"].as_array().is_none_or(|a| a.is_empty()) {
-        println!("next: add an account from the dashboard, or run `clipx login claude` / `clipx login codex`");
+    let n = state["accounts"].as_array().map_or(0, Vec::len);
+    println!("accounts     {n}");
+    if let Some(t) = &t3_state {
+        let t = api.get("/t3").await.unwrap_or_else(|_| t.clone());
+        print_t3(&t);
         println!();
+        match t3_linked() {
+            Some(true) => println!("Open https://app.t3.codes and sign in. This machine is there; pick Claude (clipx) or ChatGPT (clipx) in a new thread."),
+            _ => println!("Run `t3 connect`, then open https://app.t3.codes and sign in to use this machine from anywhere."),
+        }
+        println!("Add more accounts any time with `clipx login claude`, `clipx login codex` or `clipx login gemini`, or from the dashboard.");
+        println!("Using clipx from other apps: `clipx env`.");
+    } else {
+        println!();
+        if n == 0 {
+            println!("next: add an account from the dashboard, or run `clipx login claude` / `clipx login codex`");
+            println!();
+        }
+        print_env(&base, new_key.as_deref().unwrap_or("<your clipx key>"));
     }
-    print_env(&base, new_key.as_deref().unwrap_or("<your clipx key>"));
     Ok(())
 }
