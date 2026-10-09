@@ -107,7 +107,8 @@ enum Cmd {
         follow: bool,
     },
     /// Add clipx to T3 Code as "Claude (clipx)" and "ChatGPT (clipx)": on (default), off,
-    /// or show (the values to enter in T3 yourself).
+    /// show (the values to enter in T3 yourself), or disconnect (take this machine off
+    /// T3 Connect, so app.t3.codes stops listing it).
     T3 {
         action: Option<String>,
         /// T3 runs on this machine but clipx runs elsewhere: the clipx address T3 should use,
@@ -543,6 +544,9 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
         }
         Cmd::T3 { action, server } => {
             let action = action.unwrap_or_else(|| "on".into());
+            if action == "disconnect" {
+                return t3_disconnect().await;
+            }
             if server.is_some() || (!config::config_path(home).exists() && T3Link::path(home).exists()) {
                 return t3_remote(home, &action, server).await;
             }
@@ -574,7 +578,7 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
                         }
                     }
                 }
-                other => return Err(format!("unknown action {other}; use on, off or show")),
+                other => return Err(format!("unknown action {other}; use on, off, show or disconnect")),
             }
             Ok(())
         }
@@ -606,6 +610,15 @@ async fn run_client(home: &Path, cmd: Cmd) -> Res {
                 match api.post("/t3", json!({"enabled": false})).await {
                     Ok(_) => println!("removed clipx from T3 Code"),
                     Err(e) => eprintln!("could not remove clipx from T3 Code: {e}"),
+                }
+            }
+            if t3_connect_status().is_some_and(|v| t3_connect_on(&v)) {
+                if std::io::stdin().is_terminal() && confirm("This machine is on T3 Connect. Take it off too, so app.t3.codes stops listing it?").await {
+                    if let Err(e) = t3_disconnect().await {
+                        eprintln!("{e}");
+                    }
+                } else {
+                    println!("this machine is still on T3 Connect. `clipx t3 disconnect` takes it off");
                 }
             }
             service::uninstall(home);
@@ -709,7 +722,7 @@ async fn t3_remote(home: &Path, action: &str, server: Option<String>) -> Res {
             let _ = std::fs::remove_file(T3Link::path(home));
             println!("removed clipx from T3 Code");
         }
-        other => return Err(format!("unknown action {other}; use on or off")),
+        other => return Err(format!("unknown action {other}; use on, off or disconnect")),
     }
     Ok(())
 }
@@ -983,6 +996,39 @@ fn t3_connect_status() -> Option<Value> {
 /// Whether this machine is on T3 Connect. None when the `t3` command is missing or did not answer.
 fn t3_linked() -> Option<bool> {
     t3_connect_status().map(|v| v["linked"] == true)
+}
+
+fn t3_connect_on(status: &Value) -> bool {
+    status["desired"] == true || status["linked"] == true
+}
+
+/// Take this machine off T3 Connect with `t3 connect unlink`. T3 deletes the machine's
+/// record on its relay, so app.t3.codes stops listing it, and stops the tunnel. T3 stays
+/// signed in, so `t3 connect` adds the machine back without a new sign-in.
+async fn t3_disconnect() -> Res {
+    let cli = t3::cli().ok_or("T3 Code is not installed here")?;
+    let status = t3_connect_status().ok_or("T3 Code did not answer `t3 connect status`")?;
+    // Signed in but already off still runs unlink: a relay record left by an unlink that
+    // could not reach the relay is removed then.
+    if !t3_connect_on(&status) && status["authenticated"] != true {
+        println!("this machine is not on T3 Connect");
+        return Ok(());
+    }
+    let out = std::process::Command::new(&cli)
+        .args(["connect", "unlink"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("t3 connect unlink: {e}"))?;
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    print!("{said}");
+    if !out.status.success() || t3_connect_status().is_none_or(|v| t3_connect_on(&v)) {
+        return Err("T3 Connect is still on for this machine; see the output above".into());
+    }
+    if said.contains("Could not revoke") {
+        return Err("T3 Connect is off here, but T3 could not reach its relay to remove this machine from app.t3.codes. run `clipx t3 disconnect` again later".into());
+    }
+    println!("removed this machine from T3 Connect. app.t3.codes no longer lists it");
+    Ok(())
 }
 
 fn print_t3(t: &Value) {

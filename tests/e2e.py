@@ -675,6 +675,46 @@ try:
     check("clipx t3 off there removes it and its key", out.returncode == 0 and far["providerInstances"] == {} and far["theme"] == "light"
           and not os.path.exists(link) and not any(k["name"].startswith("T3 Code") for k in st["keys"]), (out.stdout, out.stderr, far))
 
+    # clipx t3 disconnect, with a fake `t3` that keeps T3 Connect state in a file.
+    fake_t3 = os.path.join(HOME, "fake-t3")
+    os.makedirs(fake_t3)
+    cstate = os.path.join(fake_t3, "connect.json")
+    calls = os.path.join(fake_t3, "calls")
+    open(os.path.join(fake_t3, "t3"), "w").write(f"""#!/usr/bin/env python3
+import json, os, sys
+a = sys.argv[1:]
+open({calls!r}, "a").write(" ".join(a) + "\\n")
+st = json.load(open({cstate!r}))
+if a == ["connect", "status", "--json"]:
+    print(json.dumps(st))
+elif a == ["connect", "unlink"]:
+    st["desired"] = st["linked"] = False
+    json.dump(st, open({cstate!r}, "w"))
+    print("T3 Connect is disabled locally.")
+    if os.environ.get("RELAY_DOWN"):
+        print("Could not revoke the relay-side environment record yet.", file=sys.stderr)
+    elif st["authenticated"]:
+        print("Revoked the relay-side environment record.")
+""")
+    os.chmod(os.path.join(fake_t3, "t3"), 0o755)
+    T3ENV = dict(ENV, PATH=fake_t3 + os.pathsep + ENV["PATH"])
+    def connect_state(**kw):
+        json.dump(dict({"desired": False, "authenticated": False, "linked": False}, **kw), open(cstate, "w"))
+        open(calls, "w").close()
+    connect_state(desired=True, authenticated=True, linked=True)
+    out = subprocess.run([BIN, "t3", "disconnect"], env=dict(T3ENV, RELAY_DOWN="1"), capture_output=True, text=True)
+    check("disconnect says when the relay kept the machine", out.returncode != 0 and "again later" in out.stderr, (out.stdout, out.stderr))
+    out = subprocess.run([BIN, "t3", "disconnect"], env=T3ENV, capture_output=True, text=True)
+    check("disconnect again removes it from the relay", out.returncode == 0 and "Revoked the relay-side" in out.stdout
+          and "connect unlink" in open(calls).read(), (out.stdout, out.stderr))
+    connect_state()
+    out = subprocess.run([BIN, "t3", "disconnect"], env=T3ENV, capture_output=True, text=True)
+    check("disconnect when not on T3 Connect does nothing", out.returncode == 0 and "not on T3 Connect" in out.stdout
+          and "unlink" not in open(calls).read(), (out.stdout, out.stderr))
+    connect_state(desired=True, authenticated=True, linked=True)
+    out = subprocess.run([BIN, "t3", "disconnect"], env=dict(T3ENV, CLIPX_HOME=far_home), capture_output=True, text=True)
+    check("disconnect works where only T3 runs", out.returncode == 0 and "removed this machine" in out.stdout, (out.stdout, out.stderr))
+
     # clipx update, from a local copy of a release.
     import hashlib, http.server, tarfile, platform
     target = {"x86_64": "x86_64-unknown-linux-musl", "aarch64": "aarch64-unknown-linux-musl"}[platform.machine()]

@@ -30,6 +30,7 @@ The two providers point T3 at clipx on the same machine, each with its own clipx
 
 - `clipx t3 off` takes clipx out of T3. `clipx t3` puts it back. The dashboard's T3 Code page has the same switch.
 - `clipx t3 show` prints the values to add in T3 yourself instead.
+- `clipx t3 disconnect` takes this machine off T3 Connect, so app.t3.codes stops listing it. T3 stays signed in, and `t3 connect` adds the machine back. `clipx uninstall` asks whether to do this too.
 - T3 on a different machine from clipx: install clipx there with `curl -fsSL …/install.sh | CLIPX_NO_SETUP=1 sh`, then run `clipx t3 --server http://<clipx address>:8318`. It asks for the admin token from `~/.clipx/config.toml` on the clipx machine. Nothing runs in the background there, so run `clipx t3` again after adding a new kind of account. `clipx update` runs it for you.
 - Gemini accounts don't show up in T3 yet. T3 has no agent that can use them through clipx.
 
@@ -74,7 +75,7 @@ clipx status | accounts | env | logs
 clipx login claude | codex | gemini
 clipx import <path> [--link]
 clipx keys [create <name> | revoke <id>]
-clipx t3 [off | show] [--server <url>]
+clipx t3 [off | show | disconnect] [--server <url>]
 clipx connect tailscale | cloudflare | off
 clipx start | stop | restart | update | uninstall
 ```
