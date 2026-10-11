@@ -1,5 +1,6 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
+import { departureMonoWoff2 } from "./font";
 
 const INSTALL = "curl -fsSL https://clix.lakebed.app/install | sh";
 const REPO = "https://github.com/shivamhwp/clipx";
@@ -24,35 +25,99 @@ function Logo({ size }: { size: number }) {
   );
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+// Lakebed compiles Tailwind only, so the font face and the copy animations live here.
+const STYLES = `
+@font-face { font-family: 'Departure Mono'; src: url(${departureMonoWoff2}) format('woff2'); font-display: block; }
+html, body, code, pre, button { font-family: 'Departure Mono', ui-monospace, monospace; }
+::selection { background: #346bf155; }
+@keyframes cx-pop { 0% { transform: scale(.4) rotate(-20deg); opacity: 0 } 60% { transform: scale(1.25) rotate(4deg); opacity: 1 } 100% { transform: scale(1) rotate(0) } }
+@keyframes cx-glow { 0% { box-shadow: 0 0 0 0 #346bf1aa } 100% { box-shadow: 0 0 0 10px #346bf100 } }
+.cx-pop { animation: cx-pop .35s cubic-bezier(.2,.9,.3,1.4) }
+.cx-glow { animation: cx-glow .6s ease-out }
+`;
+
+function installStyles() {
+  if (document.getElementById("cx-style")) return;
+  const style = document.createElement("style");
+  style.id = "cx-style";
+  style.textContent = STYLES;
+  document.head.appendChild(style);
+}
+
+function useCopy(text: string) {
+  const [copied, setCopied] = useState(0);
+  const copy = () => {
+    const stamp = Date.now();
+    setCopied(stamp);
+    setTimeout(() => setCopied((now) => (now === stamp ? 0 : now)), 1600);
+    navigator.clipboard.writeText(text).catch(() => {
+      // Some browsers refuse the async clipboard here; the old way still works.
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    });
+  };
+  return [copied, copy] as const;
+}
+
+function CopyIcon({ done }: { done: boolean }) {
+  return done ? (
+    <svg aria-hidden="true" className="cx-pop h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" viewBox="0 0 24 24">
+      <path d="M5 12.5l4.5 4.5L19 7.5" />
+    </svg>
+  ) : (
+    <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+      <rect height="12" rx="2" width="12" x="9" y="9" />
+      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+    </svg>
+  );
+}
+
+function CopyButton({ copied, onCopy }: { copied: number; onCopy: () => void }) {
   return (
     <button
-      className="shrink-0 border border-white/10 px-2.5 py-1 text-xs text-neutral-400 hover:bg-white/5 hover:text-neutral-100"
-      onClick={() => {
-        void navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        });
-      }}
+      aria-label="copy"
+      className={`flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors ${
+        copied ? "bg-[#346bf1]/20 text-[#9db4ff]" : "text-neutral-500 hover:bg-white/[0.06] hover:text-neutral-100"
+      }`}
+      onClick={onCopy}
       type="button"
     >
+      <CopyIcon done={Boolean(copied)} key={copied} />
       {copied ? "copied" : "copy"}
     </button>
   );
 }
 
 function Code({ children, copy }: { children: string; copy?: boolean }) {
+  const [copied, onCopy] = useCopy(children);
   return (
-    <div className="my-4 flex items-start gap-3 border border-white/10 bg-white/[0.03] px-4 py-3">
-      <pre className="min-w-0 flex-1 overflow-x-auto overscroll-none font-mono text-[13px] leading-6 text-neutral-200">{children}</pre>
-      {copy ? <CopyButton text={children} /> : null}
+    <div
+      className={`my-4 overflow-hidden rounded-lg border bg-gradient-to-b from-white/[0.05] to-white/[0.02] transition-colors ${
+        copied ? "cx-glow border-[#346bf1]/60" : "border-white/10"
+      }`}
+      key={copied || undefined}
+    >
+      <div className="flex h-9 items-center gap-1.5 border-b border-white/[0.06] pl-4 pr-1.5">
+        <span className="h-2 w-2 rounded-full bg-white/10" />
+        <span className="h-2 w-2 rounded-full bg-white/10" />
+        <span className="h-2 w-2 rounded-full bg-white/10" />
+        <span className="ml-2 text-[11px] text-neutral-600">terminal</span>
+        <span className="flex-1" />
+        {copy ? <CopyButton copied={copied} onCopy={onCopy} /> : null}
+      </div>
+      <pre className="overflow-x-auto overscroll-none px-4 py-3 text-[13px] leading-6 text-neutral-200">{children}</pre>
     </div>
   );
 }
 
 function C({ children }: { children: ComponentChildren }) {
-  return <code className="bg-white/[0.06] px-1.5 py-0.5 font-mono text-[13px] text-neutral-200">{children}</code>;
+  return <code className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[13px] text-neutral-200">{children}</code>;
 }
 
 function A({ href, children }: { href: string; children: ComponentChildren }) {
@@ -66,7 +131,7 @@ function A({ href, children }: { href: string; children: ComponentChildren }) {
 function Section({ id, title, children }: { id: string; title: string; children: ComponentChildren }) {
   return (
     <section className="scroll-mt-10 border-t border-white/[0.07] pt-10 first:border-t-0 first:pt-0" id={id}>
-      <h2 className="mb-4 text-xl font-semibold tracking-tight text-neutral-50">{title}</h2>
+      <h2 className="mb-4 text-xl text-neutral-50">{title}</h2>
       <div className="space-y-4 text-[15px] leading-7 text-neutral-400">{children}</div>
     </section>
   );
@@ -77,7 +142,7 @@ function Hero() {
     <div className="flex flex-col items-start gap-5 sm:flex-row sm:items-center">
       <Logo size={64} />
       <div>
-        <h1 className="text-4xl font-semibold tracking-tight text-neutral-50">clipx</h1>
+        <h1 className="text-[44px] leading-none text-neutral-50">clipx</h1>
         <p className="mt-1.5 max-w-md text-sm leading-6 text-neutral-500">
           Use all your Claude, ChatGPT and Gemini subscriptions from T3 Code, Claude Code, Codex or any OpenAI-compatible app. One
           command sets it up.
@@ -88,12 +153,18 @@ function Hero() {
 }
 
 function InstallBox() {
+  const [copied, onCopy] = useCopy(INSTALL);
   return (
     <div className="mb-10">
-      <div className="flex items-center gap-3 border border-[#346bf1]/40 bg-[#346bf1]/[0.08] px-4 py-3.5">
-        <span className="select-none font-mono text-[#346bf1]">$</span>
-        <code className="min-w-0 flex-1 overflow-x-auto overscroll-none whitespace-nowrap font-mono text-sm text-neutral-100">{INSTALL}</code>
-        <CopyButton text={INSTALL} />
+      <div
+        className={`flex items-center gap-3 rounded-xl border bg-gradient-to-r from-[#346bf1]/[0.14] to-[#346bf1]/[0.04] py-2 pl-4 pr-2 transition-colors ${
+          copied ? "cx-glow border-[#346bf1]" : "border-[#346bf1]/40"
+        }`}
+        key={copied || undefined}
+      >
+        <span className="select-none text-[#346bf1]">$</span>
+        <code className="min-w-0 flex-1 overflow-x-auto overscroll-none whitespace-nowrap py-1.5 text-sm text-neutral-100">{INSTALL}</code>
+        <CopyButton copied={copied} onCopy={onCopy} />
       </div>
       <p className="mt-3 text-sm text-neutral-500">
         Linux and macOS. Then open <A href="https://app.t3.codes">app.t3.codes</A> and this machine is there.
@@ -226,6 +297,7 @@ function Docs() {
 
 export function App() {
   useEffect(() => {
+    installStyles();
     document.title = "clipx: one command, every subscription";
     // No rubber-band scrolling in either direction.
     for (const el of [document.documentElement, document.body]) {
