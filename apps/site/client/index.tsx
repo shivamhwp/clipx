@@ -45,7 +45,7 @@ function CopyButton({ text }: { text: string }) {
 function Code({ children, copy }: { children: string; copy?: boolean }) {
   return (
     <div className="my-4 flex items-start gap-3 rounded-lg border border-white/10 bg-[#111111] px-4 py-3">
-      <pre className="min-w-0 flex-1 overflow-x-auto font-mono text-[13px] leading-6 text-neutral-200">{children}</pre>
+      <pre className="min-w-0 flex-1 overflow-x-auto overscroll-none font-mono text-[13px] leading-6 text-neutral-200">{children}</pre>
       {copy ? <CopyButton text={children} /> : null}
     </div>
   );
@@ -65,7 +65,7 @@ function A({ href, children }: { href: string; children: ComponentChildren }) {
 
 function Section({ id, title, children }: { id: string; title: string; children: ComponentChildren }) {
   return (
-    <section className="scroll-mt-20 border-t border-white/[0.07] pt-10" id={id}>
+    <section className="scroll-mt-10 border-t border-white/[0.07] pt-10 first:border-t-0 first:pt-0" id={id}>
       <h2 className="mb-4 text-xl font-semibold tracking-tight text-neutral-50">{title}</h2>
       <div className="space-y-4 text-[15px] leading-7 text-neutral-400">{children}</div>
     </section>
@@ -74,16 +74,25 @@ function Section({ id, title, children }: { id: string; title: string; children:
 
 function Hero() {
   return (
-    <div className="pb-14 pt-16">
-      <Logo size={56} />
-      <h1 className="mt-6 text-4xl font-semibold tracking-tight text-neutral-50 sm:text-5xl">One command, every subscription.</h1>
-      <p className="mt-4 max-w-xl text-lg leading-8 text-neutral-400">
-        clipx lets T3 Code, Claude Code, Codex and any OpenAI-compatible app use all your Claude, ChatGPT and Gemini accounts. It
-        spreads requests over them and moves on when one hits its limit.
-      </p>
-      <div className="mt-8 flex max-w-xl items-center gap-3 rounded-xl border border-[#346bf1]/40 bg-[#346bf1]/[0.08] px-4 py-3.5">
+    <div className="flex flex-col items-start gap-5 sm:flex-row sm:items-center">
+      <Logo size={64} />
+      <div>
+        <h1 className="text-4xl font-semibold tracking-tight text-neutral-50">clipx</h1>
+        <p className="mt-1.5 max-w-md text-sm leading-6 text-neutral-500">
+          Use all your Claude, ChatGPT and Gemini subscriptions from T3 Code, Claude Code, Codex or any OpenAI-compatible app. One
+          command sets it up.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function InstallBox() {
+  return (
+    <div className="mb-10">
+      <div className="flex items-center gap-3 rounded-xl border border-[#346bf1]/40 bg-[#346bf1]/[0.08] px-4 py-3.5">
         <span className="select-none font-mono text-[#346bf1]">$</span>
-        <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-sm text-neutral-100">{INSTALL}</code>
+        <code className="min-w-0 flex-1 overflow-x-auto overscroll-none whitespace-nowrap font-mono text-sm text-neutral-100">{INSTALL}</code>
         <CopyButton text={INSTALL} />
       </div>
       <p className="mt-3 text-sm text-neutral-500">
@@ -95,9 +104,8 @@ function Hero() {
 
 function Docs() {
   return (
-    <div className="space-y-10 pb-24">
+    <div className="space-y-10">
       <Section id="install" title="Install">
-        <Code copy>{INSTALL}</Code>
         <p>The command downloads one 9 MB binary, which uses about 7 MB of memory, and runs setup. Setup:</p>
         <ol className="list-decimal space-y-2 pl-5">
           <li>Installs clipx as a service and puts it online.</li>
@@ -219,41 +227,42 @@ function Docs() {
 export function App() {
   useEffect(() => {
     document.title = "clipx: one command, every subscription";
-    document.documentElement.style.background = "#0a0a0a";
+    // No rubber-band scrolling in either direction.
+    for (const el of [document.documentElement, document.body]) {
+      el.style.background = "#0a0a0a";
+      el.style.overscrollBehavior = "none";
+      el.style.overflowX = "clip";
+    }
   }, []);
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-neutral-300 antialiased">
-      <header className="sticky top-0 z-10 border-b border-white/[0.07] bg-[#0a0a0a]/80 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-5xl items-center gap-3 px-6">
-          <a className="flex items-center gap-2.5 font-semibold text-neutral-50" href="/">
-            <Logo size={22} />
-            clipx
-          </a>
-          <nav className="ml-auto flex items-center gap-5 text-sm text-neutral-400">
-            <a className="hidden hover:text-neutral-100 sm:block" href="#install">
-              Docs
-            </a>
-            <a className="hover:text-neutral-100" href={REPO}>
-              GitHub
-            </a>
-          </nav>
+    <div className="min-h-screen overflow-x-clip bg-[#0a0a0a] px-4 py-6 text-neutral-300 antialiased sm:px-8 sm:py-10">
+      <div className="mx-auto max-w-6xl">
+        <div className="rounded-3xl border border-white/10 bg-[#111111] px-6 pb-28 pt-12 sm:pb-56 sm:pt-20">
+          <div className="mx-auto max-w-3xl">
+            <Hero />
+          </div>
         </div>
-      </header>
-      <div className="mx-auto max-w-5xl px-6">
-        <Hero />
-        <div className="flex gap-12">
-          <aside className="hidden w-40 shrink-0 lg:block">
-            <ul className="sticky top-24 space-y-2 pt-10 text-sm">
-              {sections.map(([id, label]) => (
-                <li key={id}>
-                  <a className="text-neutral-500 hover:text-neutral-100" href={`#${id}`}>
-                    {label}
+        <div className="relative -mt-20 grid gap-8 sm:-mt-40 lg:grid-cols-[1fr_48rem_1fr]">
+          <aside className="hidden lg:block">
+            <nav className="sticky top-10 mt-44 flex justify-end pr-2">
+              <ul className="space-y-2 text-sm">
+                {sections.map(([id, label]) => (
+                  <li key={id}>
+                    <a className="text-neutral-500 hover:text-neutral-100" href={`#${id}`}>
+                      {label}
+                    </a>
+                  </li>
+                ))}
+                <li className="pt-3">
+                  <a className="text-neutral-500 hover:text-neutral-100" href={REPO}>
+                    GitHub
                   </a>
                 </li>
-              ))}
-            </ul>
+              </ul>
+            </nav>
           </aside>
-          <main className="min-w-0 max-w-2xl flex-1">
+          <main className="min-w-0 rounded-3xl border border-white/10 bg-[#0a0a0a] p-6 sm:p-10">
+            <InstallBox />
             <Docs />
           </main>
         </div>
