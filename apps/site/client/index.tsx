@@ -28,7 +28,7 @@ function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
-      className="shrink-0 rounded-md border border-white/10 px-2.5 py-1 text-xs text-neutral-400 hover:bg-white/5 hover:text-neutral-100"
+      className="shrink-0 border border-white/10 px-2.5 py-1 text-xs text-neutral-400 hover:bg-white/5 hover:text-neutral-100"
       onClick={() => {
         void navigator.clipboard.writeText(text).then(() => {
           setCopied(true);
@@ -44,7 +44,7 @@ function CopyButton({ text }: { text: string }) {
 
 function Code({ children, copy }: { children: string; copy?: boolean }) {
   return (
-    <div className="my-4 flex items-start gap-3 rounded-lg border border-white/10 bg-[#111111] px-4 py-3">
+    <div className="my-4 flex items-start gap-3 border border-white/10 bg-white/[0.03] px-4 py-3">
       <pre className="min-w-0 flex-1 overflow-x-auto overscroll-none font-mono text-[13px] leading-6 text-neutral-200">{children}</pre>
       {copy ? <CopyButton text={children} /> : null}
     </div>
@@ -52,7 +52,7 @@ function Code({ children, copy }: { children: string; copy?: boolean }) {
 }
 
 function C({ children }: { children: ComponentChildren }) {
-  return <code className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[13px] text-neutral-200">{children}</code>;
+  return <code className="bg-white/[0.06] px-1.5 py-0.5 font-mono text-[13px] text-neutral-200">{children}</code>;
 }
 
 function A({ href, children }: { href: string; children: ComponentChildren }) {
@@ -90,7 +90,7 @@ function Hero() {
 function InstallBox() {
   return (
     <div className="mb-10">
-      <div className="flex items-center gap-3 rounded-xl border border-[#346bf1]/40 bg-[#346bf1]/[0.08] px-4 py-3.5">
+      <div className="flex items-center gap-3 border border-[#346bf1]/40 bg-[#346bf1]/[0.08] px-4 py-3.5">
         <span className="select-none font-mono text-[#346bf1]">$</span>
         <code className="min-w-0 flex-1 overflow-x-auto overscroll-none whitespace-nowrap font-mono text-sm text-neutral-100">{INSTALL}</code>
         <CopyButton text={INSTALL} />
@@ -229,22 +229,22 @@ export function App() {
     document.title = "clipx: one command, every subscription";
     // No rubber-band scrolling in either direction.
     for (const el of [document.documentElement, document.body]) {
-      el.style.background = "#0a0a0a";
+      el.style.background = "#000000";
       el.style.overscrollBehavior = "none";
       el.style.overflowX = "clip";
     }
   }, []);
   return (
-    <div className="min-h-screen overflow-x-clip bg-[#0a0a0a] px-4 py-6 text-neutral-300 antialiased sm:px-8 sm:py-10">
+    <div className="min-h-screen overflow-x-clip bg-black px-4 py-6 text-neutral-300 antialiased sm:px-8 sm:py-10">
       <div className="mx-auto max-w-6xl">
-        <div className="rounded-3xl border border-white/10 bg-[#111111] px-6 pb-28 pt-12 sm:pb-56 sm:pt-20">
+        <div className="px-0 pb-12 pt-10 sm:pb-16 sm:pt-24">
           <div className="mx-auto max-w-3xl">
             <Hero />
           </div>
         </div>
-        <div className="relative -mt-20 grid gap-8 sm:-mt-40 lg:grid-cols-[1fr_48rem_1fr]">
+        <div className="grid gap-8 lg:grid-cols-[1fr_48rem_1fr]">
           <aside className="hidden lg:block">
-            <nav className="sticky top-10 mt-44 flex justify-end pr-2">
+            <nav className="sticky top-10 flex justify-end pr-2">
               <ul className="space-y-2 text-sm">
                 {sections.map(([id, label]) => (
                   <li key={id}>
@@ -261,7 +261,7 @@ export function App() {
               </ul>
             </nav>
           </aside>
-          <main className="min-w-0 rounded-3xl border border-white/10 bg-[#0a0a0a] p-6 sm:p-10">
+          <main className="min-w-0 pb-24">
             <InstallBox />
             <Docs />
           </main>
