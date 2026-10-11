@@ -1,3 +1,5 @@
+<img src="web/favicon.svg" width="72" alt="clipx logo">
+
 # clipx
 
 Use all your Claude, ChatGPT and Gemini subscriptions from T3 Code, Claude Code, Codex or any OpenAI-compatible app. clipx spreads requests over every account you add and moves on when one hits its limit. It's CLIProxyAPI built for T3 Code, plus a dashboard.
