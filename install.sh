@@ -1,11 +1,13 @@
 #!/bin/sh
 # Install clipx and set it up.
 #
-#   curl -fsSL https://raw.githubusercontent.com/shivamhwp/clipx/main/install.sh | sh
+#   curl -fsSL https://clix.lakebed.app/install | sh
+#
+# clix.lakebed.app/install fetches this file from main, so a change here is live once pushed.
 #
 # Arguments after `sh -s --` go to `clipx setup`, for example:
-#   curl -fsSL …/install.sh | sh -s -- --relay https://relay.example.com --name mybox
-#   curl -fsSL …/install.sh | sh -s -- --tunnel off --public
+#   curl -fsSL https://clix.lakebed.app/install | sh -s -- --relay https://relay.example.com --name mybox
+#   curl -fsSL https://clix.lakebed.app/install | sh -s -- --tunnel off --public
 #
 # CLIPX_REPO, CLIPX_VERSION (a tag, default latest), CLIPX_DOWNLOAD_BASE (a mirror) and
 # CLIPX_INSTALL_DIR override defaults. CLIPX_NO_SETUP=1 installs the binary only, for a

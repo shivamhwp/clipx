@@ -1,4 +1,4 @@
-<img src="web/favicon.svg" width="72" alt="clipx logo">
+<img src="apps/site/favicon.svg" width="72" alt="clipx logo">
 
 # clipx
 
@@ -9,8 +9,10 @@ One 9 MB binary, about 7 MB of memory.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/shivamhwp/clipx/main/install.sh | sh
+curl -fsSL https://clix.lakebed.app/install | sh
 ```
+
+Docs: [clix.lakebed.app](https://clix.lakebed.app)
 
 One command does the rest:
 
@@ -33,7 +35,7 @@ The two providers point T3 at clipx on the same machine, each with its own clipx
 - `clipx t3 off` takes clipx out of T3. `clipx t3` puts it back. The dashboard's T3 Code page has the same switch.
 - `clipx t3 show` prints the values to add in T3 yourself instead.
 - `clipx t3 disconnect` takes this machine off T3 Connect, so app.t3.codes stops listing it. T3 stays signed in, and `t3 connect` adds the machine back. `clipx uninstall` asks whether to do this too.
-- T3 on a different machine from clipx: install clipx there with `curl -fsSL …/install.sh | CLIPX_NO_SETUP=1 sh`, then run `clipx t3 --server http://<clipx address>:8318`. It asks for the admin token from `~/.clipx/config.toml` on the clipx machine. Nothing runs in the background there, so run `clipx t3` again after adding a new kind of account. `clipx update` runs it for you.
+- T3 on a different machine from clipx: install clipx there with `curl -fsSL https://clix.lakebed.app/install | CLIPX_NO_SETUP=1 sh`, then run `clipx t3 --server http://<clipx address>:8318`. It asks for the admin token from `~/.clipx/config.toml` on the clipx machine. Nothing runs in the background there, so run `clipx t3` again after adding a new kind of account. `clipx update` runs it for you.
 - Gemini accounts don't show up in T3 yet. T3 has no agent that can use them through clipx.
 
 ## Use it elsewhere
@@ -86,9 +88,14 @@ Everything lives in `~/.clipx`.
 
 ## Develop
 
+- `apps/cli` is clipx itself, in Rust, with its dashboard in `apps/cli/web`.
+- `apps/site` is the docs site at clix.lakebed.app, a [Lakebed](https://lakebed.dev) app. It also serves `/install`, which runs `install.sh` from this repo.
+
 ```sh
 cargo test
-python3 tests/e2e.py target/release/clipx
+cargo build --release && python3 apps/cli/tests/e2e.py
+cd apps/site && npx lakebed dev      # docs site on localhost:3000
+cd apps/site && npx lakebed deploy   # publish clix.lakebed.app
 ```
 
 Using subscription logins outside the official apps may break the providers' terms. Check them for your plan.

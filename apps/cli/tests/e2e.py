@@ -1,6 +1,6 @@
 """End-to-end test: real clipx binary against a fake upstream, plus a local relay.
 
-Run: python3 tests/e2e.py [path/to/clipx]
+Run: python3 apps/cli/tests/e2e.py [path/to/clipx]
 """
 
 import http.client
@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BIN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "target/release/clipx")
+BIN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "../../target/release/clipx")
 MOCK, PORT, RELAY = 18901, 18902, 18903
 HOME = tempfile.mkdtemp(prefix="clipx-e2e-")
 ENV = dict(os.environ, CLIPX_HOME=HOME, CLIPX_CLAUDE_API=f"http://127.0.0.1:{MOCK}", CLIPX_CLAUDE_TOKEN_URL=f"http://127.0.0.1:{MOCK}/oauth/claude",
