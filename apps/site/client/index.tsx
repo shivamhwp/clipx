@@ -32,10 +32,12 @@ const STYLES = `
 html, body { font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; }
 code, pre, h1, h2, button { font-family: 'Departure Mono', ui-monospace, monospace; }
 ::selection { background: #346bf155; }
-@keyframes cx-pop { 0% { transform: scale(.4) rotate(-20deg); opacity: 0 } 60% { transform: scale(1.25) rotate(4deg); opacity: 1 } 100% { transform: scale(1) rotate(0) } }
-@keyframes cx-glow { 0% { box-shadow: 0 0 0 0 #346bf1aa } 100% { box-shadow: 0 0 0 10px #346bf100 } }
-.cx-pop { animation: cx-pop .35s cubic-bezier(.2,.9,.3,1.4) }
-.cx-glow { animation: cx-glow .6s ease-out }
+@keyframes cx-burst { from { transform: translate(0, 0); opacity: 1 } to { transform: translate(var(--dx), var(--dy)); opacity: 0 } }
+@keyframes cx-on { to { opacity: 1 } }
+@keyframes cx-blink { 0%, 30% { border-color: #9db4ff } 15%, 45%, 100% { border-color: #346bf1 } }
+.cx-burst { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px; animation: cx-burst .6s steps(6) forwards; pointer-events: none }
+.cx-dot { opacity: 0; animation: cx-on 0s steps(1) forwards }
+.cx-blink { animation: cx-blink .6s steps(1) }
 `;
 
 function installStyles() {
@@ -67,16 +69,66 @@ function useCopy(text: string) {
   return [copied, copy] as const;
 }
 
-function CopyIcon({ done }: { done: boolean }) {
-  return done ? (
-    <svg aria-hidden="true" className="cx-pop h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" viewBox="0 0 24 24">
-      <path d="M5 12.5l4.5 4.5L19 7.5" />
+// Pixel art on a 2px grid, so it matches Departure Mono.
+const COPY_PIXELS = "..####|..#..#|####.#|#..#.#|#..###|#..#..|####..";
+const CHECK_PIXELS = [
+  [0, 3], [1, 4], [2, 5], [3, 4], [4, 3], [5, 2], [6, 1], [7, 0],
+].flatMap(([x, y]) => [[x, y], [x, y + 1]]);
+
+function CopyIcon() {
+  const cells = COPY_PIXELS.split("|").flatMap((row, y) => [...row].map((c, x) => (c === "#" ? [x, y] : null))).filter(Boolean);
+  return (
+    <svg aria-hidden="true" fill="currentColor" height="14" shape-rendering="crispEdges" viewBox="0 0 6 7" width="12">
+      {cells.map((cell) => (
+        <rect height="1" key={`${cell![0]}-${cell![1]}`} width="1" x={cell![0]} y={cell![1]} />
+      ))}
     </svg>
-  ) : (
-    <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
-      <rect height="12" rx="2" width="12" x="9" y="9" />
-      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+  );
+}
+
+// Each pixel of the check lands one frame after the last.
+function CheckIcon() {
+  return (
+    <svg aria-hidden="true" fill="currentColor" height="14" shape-rendering="crispEdges" viewBox="0 0 8 7" width="16">
+      {CHECK_PIXELS.map(([x, y], i) => (
+        <rect className="cx-dot" height="1" key={i} style={{ animationDelay: `${40 + (i >> 1) * 35}ms` }} width="1" x={x} y={y} />
+      ))}
     </svg>
+  );
+}
+
+// Square pixels fly out from the button in steps, like a sprite.
+const BURST = Array.from({ length: 18 }, (_, i) => {
+  const angle = (i / 18) * Math.PI * 2 + (i % 2) * 0.2;
+  const reach = 26 + (i % 3) * 14;
+  const snap = (n: number) => Math.round(n / 4) * 4;
+  return { dx: snap(Math.cos(angle) * reach * 1.8), dy: snap(Math.sin(angle) * reach), color: ["#346bf1", "#9db4ff", "#ffffff"][i % 3] };
+});
+
+function Burst() {
+  return (
+    <>
+      {BURST.map((p, i) => (
+        <span className="cx-burst" key={i} style={{ "--dx": `${p.dx}px`, "--dy": `${p.dy}px`, background: p.color }} />
+      ))}
+    </>
+  );
+}
+
+// "copied" types itself out through a few frames of noise.
+const NOISE = "#%&@$*+=";
+
+function Scramble({ text }: { text: string }) {
+  const [frame, setFrame] = useState(0);
+  useEffect(() => {
+    if (frame > text.length + 2) return;
+    const id = setTimeout(() => setFrame(frame + 1), 40);
+    return () => clearTimeout(id);
+  }, [frame, text]);
+  return (
+    <span>
+      {[...text].map((c, i) => (i + 2 < frame ? c : NOISE[(i * 7 + frame * 3) % NOISE.length])).join("")}
+    </span>
   );
 }
 
@@ -84,14 +136,24 @@ function CopyButton({ copied, onCopy }: { copied: number; onCopy: () => void }) 
   return (
     <button
       aria-label="copy"
-      className={`flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors ${
+      className={`relative flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs ${
         copied ? "bg-[#346bf1]/20 text-[#9db4ff]" : "text-neutral-500 hover:bg-white/[0.06] hover:text-neutral-100"
       }`}
       onClick={onCopy}
       type="button"
     >
-      <CopyIcon done={Boolean(copied)} key={copied} />
-      {copied ? "copied" : "copy"}
+      {copied ? (
+        <span className="contents" key={copied}>
+          <CheckIcon />
+          <Scramble text="copied" />
+          <Burst />
+        </span>
+      ) : (
+        <>
+          <CopyIcon />
+          copy
+        </>
+      )}
     </button>
   );
 }
@@ -100,8 +162,8 @@ function Code({ children, copy }: { children: string; copy?: boolean }) {
   const [copied, onCopy] = useCopy(children);
   return (
     <div
-      className={`my-4 overflow-hidden rounded-lg border bg-gradient-to-b from-white/[0.05] to-white/[0.02] transition-colors ${
-        copied ? "cx-glow border-[#346bf1]/60" : "border-white/10"
+      className={`my-4 rounded-lg border bg-gradient-to-b from-white/[0.05] to-white/[0.02] transition-colors ${
+        copied ? "cx-blink border-[#346bf1]/60" : "border-white/10"
       }`}
       key={copied || undefined}
     >
@@ -160,7 +222,7 @@ function InstallBox() {
     <div className="mb-10">
       <div
         className={`flex items-center gap-3 rounded-xl border bg-gradient-to-r from-[#346bf1]/[0.14] to-[#346bf1]/[0.04] py-2 pl-4 pr-2 transition-colors ${
-          copied ? "cx-glow border-[#346bf1]" : "border-[#346bf1]/40"
+          copied ? "cx-blink border-[#346bf1]" : "border-[#346bf1]/40"
         }`}
         key={copied || undefined}
       >
