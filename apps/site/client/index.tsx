@@ -1,6 +1,6 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { departureMonoWoff2 } from "./font";
+import { departureMonoWoff2, geistWoff2 } from "./font";
 
 const INSTALL = "curl -fsSL https://clix.lakebed.app/install | sh";
 const REPO = "https://github.com/shivamhwp/clipx";
@@ -28,7 +28,9 @@ function Logo({ size }: { size: number }) {
 // Lakebed compiles Tailwind only, so the font face and the copy animations live here.
 const STYLES = `
 @font-face { font-family: 'Departure Mono'; src: url(${departureMonoWoff2}) format('woff2'); font-display: block; }
-html, body, code, pre, button { font-family: 'Departure Mono', ui-monospace, monospace; }
+@font-face { font-family: 'Geist'; src: url(${geistWoff2}) format('woff2'); font-weight: 100 900; font-display: block; }
+html, body { font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; }
+code, pre, h1, h2, button { font-family: 'Departure Mono', ui-monospace, monospace; }
 ::selection { background: #346bf155; }
 @keyframes cx-pop { 0% { transform: scale(.4) rotate(-20deg); opacity: 0 } 60% { transform: scale(1.25) rotate(4deg); opacity: 1 } 100% { transform: scale(1) rotate(0) } }
 @keyframes cx-glow { 0% { box-shadow: 0 0 0 0 #346bf1aa } 100% { box-shadow: 0 0 0 10px #346bf100 } }
@@ -131,7 +133,7 @@ function A({ href, children }: { href: string; children: ComponentChildren }) {
 function Section({ id, title, children }: { id: string; title: string; children: ComponentChildren }) {
   return (
     <section className="scroll-mt-10 border-t border-white/[0.07] pt-10 first:border-t-0 first:pt-0" id={id}>
-      <h2 className="mb-4 text-xl text-neutral-50">{title}</h2>
+      <h2 className="mb-4 text-xl text-[#346bf1]">{title}</h2>
       <div className="space-y-4 text-[15px] leading-7 text-neutral-400">{children}</div>
     </section>
   );
@@ -139,15 +141,15 @@ function Section({ id, title, children }: { id: string; title: string; children:
 
 function Hero() {
   return (
-    <div className="flex flex-col items-start gap-5 sm:flex-row sm:items-center">
-      <Logo size={64} />
-      <div>
+    <div>
+      <div className="flex items-center gap-4">
+        <Logo size={44} />
         <h1 className="text-[44px] leading-none text-neutral-50">clipx</h1>
-        <p className="mt-2 max-w-md text-sm leading-6 text-neutral-500">
-          Use all your Claude, ChatGPT and Gemini subscriptions in T3 Code, Claude Code, Codex or any app that speaks the OpenAI API.
-          One command sets it up.
-        </p>
       </div>
+      <p className="mt-5 max-w-xl text-[15px] leading-7 text-neutral-400">
+        Use all your Claude, ChatGPT and Gemini subscriptions in T3 Code, Claude Code, Codex or any app that speaks the OpenAI API. One
+        command sets it up.
+      </p>
     </div>
   );
 }
