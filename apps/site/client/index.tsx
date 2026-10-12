@@ -136,7 +136,7 @@ function CopyButton({ copied, onCopy }: { copied: number; onCopy: () => void }) 
   return (
     <button
       aria-label="copy"
-      className={`relative flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs ${
+      className={`relative flex h-7 w-[86px] shrink-0 items-center justify-center gap-1.5 rounded-md text-xs ${
         copied ? "bg-[#346bf1]/20 text-[#9db4ff]" : "text-neutral-500 hover:bg-white/[0.06] hover:text-neutral-100"
       }`}
       onClick={onCopy}
@@ -227,7 +227,7 @@ function InstallBox() {
         key={copied || undefined}
       >
         <span className="select-none text-[#346bf1]">$</span>
-        <code className="min-w-0 flex-1 overflow-x-auto overscroll-none whitespace-nowrap py-1.5 text-sm text-neutral-100">{INSTALL}</code>
+        <code className="min-w-0 flex-1 break-all py-1.5 text-sm sm:overflow-x-auto sm:overscroll-none sm:whitespace-nowrap sm:break-normal text-neutral-100">{INSTALL}</code>
         <CopyButton copied={copied} onCopy={onCopy} />
       </div>
       <p className="mt-3 text-sm text-neutral-500">

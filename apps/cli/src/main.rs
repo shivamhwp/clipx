@@ -844,7 +844,7 @@ async fn login(home: &Path, provider: &str) -> Res {
     let flow = r["flow_id"].as_str().unwrap_or("").to_string();
     println!("open this url in a browser and sign in:\n\n  {}\n", r["url"].as_str().unwrap_or(""));
     println!("{}", r["hint"].as_str().unwrap_or(""));
-    print!("paste here: ");
+    print!("paste here, or press Enter to skip: ");
     std::io::stdout().flush().ok();
     // A local browser callback can finish the flow while we wait for a paste.
     let mut line = read_line();
@@ -852,7 +852,8 @@ async fn login(home: &Path, provider: &str) -> Res {
         tokio::select! {
             got = &mut line => {
                 let Some(text) = got.ok().flatten().filter(|t| !t.is_empty()) else {
-                    return Err("nothing pasted".into());
+                    println!("skipped");
+                    return Ok(());
                 };
                 let r = api.post("/login/complete", json!({"flow_id": flow, "callback": text})).await?;
                 println!("added {}", r["account"]["label"].as_str().unwrap_or(""));
@@ -1182,9 +1183,15 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
     if cfg.connect.mode != TunnelMode::Off {
         print!("remote       connecting");
         use std::io::Write;
+        let mut said_download = false;
         for i in 0..90 {
             if state["tunnel"]["connected"] == true {
                 break;
+            }
+            // The first quick tunnel downloads cloudflared, which can take most of a minute.
+            if !said_download && state["tunnel"]["error"].as_str().is_some_and(|e| e.starts_with("downloading cloudflared")) {
+                print!(" (downloading cloudflared, about 40 MB)");
+                said_download = true;
             }
             // Tailscale was only a guess; if Funnel is not allowed here, use a quick tunnel.
             if auto_tunnel && i == 30 && cfg.connect.mode == TunnelMode::Tailscale {
