@@ -413,6 +413,15 @@ async fn tailscale(app: Arc<App>) {
             let hp = format!("{host}:{port}");
             let mounted = status["Web"][&hp]["Handlers"]["/"]["Proxy"].as_str() == Some(target.as_str());
             let funneled = status["AllowFunnel"][&hp].as_bool() == Some(true);
+            // Funnel opens the whole port to the internet, so anything else served on it
+            // would go public along with clipx.
+            let others: Vec<&str> = status["Web"][&hp]["Handlers"].as_object().into_iter().flatten().map(|(p, _)| p.as_str()).filter(|p| *p != "/").collect();
+            if !tailnet_only && !others.is_empty() {
+                return Err(format!(
+                    "port {port} also serves {} on your tailnet, and Funnel would put that on the internet too. Pick another port or turn on Tailnet only",
+                    others.join(", ")
+                ));
+            }
             if !mounted || funneled == tailnet_only {
                 let verb = if tailnet_only { "serve" } else { "funnel" };
                 ts(&[verb, "--bg", "--yes", &https, &target]).await?;

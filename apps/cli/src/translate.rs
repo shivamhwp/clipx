@@ -358,9 +358,25 @@ impl ClaudeToChatStream {
         out.push_str("data: [DONE]\n\n");
     }
 
-    pub fn finish(&mut self, out: &mut String) {
-        self.end(out);
+    /// Called when the upstream stream ends. Returns the error to record when it ended
+    /// before `message_stop`, after telling the client.
+    pub fn finish(&mut self, out: &mut String) -> Option<String> {
+        if self.done {
+            return None;
+        }
+        self.done = true;
+        Some(cut_off_chat(out))
     }
+}
+
+/// The upstream closed the stream before its final event. Say so rather than make up a
+/// normal finish, which would hand the client half-written tool arguments as complete.
+pub const CUT_OFF: &str = "the upstream stream ended early";
+
+fn cut_off_chat(out: &mut String) -> String {
+    out.push_str(&sse::frame(None, &json!({"error": {"message": CUT_OFF, "type": "upstream_error"}}).to_string()));
+    out.push_str("data: [DONE]\n\n");
+    CUT_OFF.to_string()
 }
 
 // ---------------------------------------------------------------- chat -> codex
@@ -613,12 +629,14 @@ impl CodexToChatStream {
         }
     }
 
-    pub fn finish(&mut self, out: &mut String) {
-        if !self.done {
-            self.done = true;
-            out.push_str(&self.c.chunk(json!({}), Some("stop")));
-            out.push_str("data: [DONE]\n\n");
+    /// Called when the upstream stream ends. Returns the error to record when it ended
+    /// before `response.completed`, after telling the client.
+    pub fn finish(&mut self, out: &mut String) -> Option<String> {
+        if self.done {
+            return None;
         }
+        self.done = true;
+        Some(cut_off_chat(out))
     }
 }
 
@@ -1050,12 +1068,16 @@ impl CodexToAnthropicStream {
         out.push_str(&sse::frame(Some("message_stop"), &json!({"type": "message_stop"}).to_string()));
     }
 
-    /// Called when the upstream stream ends; a no-op if `response.completed` (or a
-    /// failure) already closed things out.
-    pub fn finish(&mut self, out: &mut String) {
+    /// Called when the upstream stream ends. Returns the error to record when it ended
+    /// before `response.completed`, after telling the client.
+    pub fn finish(&mut self, out: &mut String) -> Option<String> {
+        if self.done {
+            return None;
+        }
+        self.done = true;
         self.start(out);
-        self.close(out);
-        self.end(out, false);
+        self.on_error(CUT_OFF, out);
+        Some(CUT_OFF.to_string())
     }
 
     /// Anthropic-shaped error event for a mid-stream network failure.
@@ -1343,8 +1365,10 @@ mod tests {
         for e in events(raw) {
             t.on_event(&e, &mut out);
         }
-        t.finish(&mut out);
-        assert!(out.contains("content_block_stop"));
-        assert!(out.ends_with("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"));
+        assert_eq!(t.finish(&mut out).as_deref(), Some(super::CUT_OFF));
+        // An error, not a made-up end_turn that would pass the partial answer off as whole.
+        assert!(out.ends_with(&format!("event: error\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":\"{}\"}}}}\n\n", super::CUT_OFF)));
+        assert!(!out.contains("message_stop"));
+        assert_eq!(t.finish(&mut out), None);
     }
 }

@@ -1,5 +1,6 @@
 //! `clipx update`: replace this binary with a release from GitHub, the same files
-//! install.sh downloads.
+//! install.sh downloads. Releases are signed with minisign, so a release swapped on
+//! GitHub, or a download mirror, can't push a binary this key didn't sign.
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -12,6 +13,21 @@ fn target() -> Result<&'static str, String> {
         ("macos", "x86_64") => "x86_64-apple-darwin",
         (os, arch) => return Err(format!("no prebuilt clipx for {os}/{arch}; update with: cargo install --git https://github.com/{}", repo())),
     })
+}
+
+/// The minisign public key releases are signed with. CLIPX_RELEASE_KEY replaces it, for
+/// a fork that signs its own releases.
+const RELEASE_KEY: &str = "RWSDOk8y8H3Zm0Gl9QWbqPwkgesR+ur/nG+ZvB6naZK2Rh/2YtsXztzk";
+
+fn release_key() -> String {
+    std::env::var("CLIPX_RELEASE_KEY").ok().filter(|k| !k.is_empty()).unwrap_or_else(|| RELEASE_KEY.into())
+}
+
+/// Check SHA256SUMS against its minisign signature.
+fn verify_sums(sums: &[u8], sig: &[u8]) -> Result<(), String> {
+    let key = minisign_verify::PublicKey::from_base64(&release_key()).map_err(|e| format!("bad release key: {e}"))?;
+    let sig = minisign_verify::Signature::decode(&String::from_utf8_lossy(sig)).map_err(|e| format!("SHA256SUMS.minisig: {e}"))?;
+    key.verify(sums, &sig, false).map_err(|e| format!("the release signature does not match ({e}); not installing it"))
 }
 
 fn repo() -> String {
@@ -62,7 +78,10 @@ pub async fn install(version: Option<String>) -> Result<Option<(PathBuf, String)
     let http = reqwest::Client::builder().user_agent("clipx").build().map_err(|e| e.to_string())?;
     let asset = format!("clipx-{target}.tar.gz");
     let tarball = fetch(&http, &format!("{base}/{asset}")).await?;
-    let sums = String::from_utf8_lossy(&fetch(&http, &format!("{base}/SHA256SUMS")).await?).to_string();
+    let sums = fetch(&http, &format!("{base}/SHA256SUMS")).await?;
+    let sig = fetch(&http, &format!("{base}/SHA256SUMS.minisig")).await.map_err(|e| format!("{e}; releases must be signed, so not installing it"))?;
+    verify_sums(&sums, &sig)?;
+    let sums = String::from_utf8_lossy(&sums).to_string();
     let want = sums.lines().find_map(|l| l.strip_suffix(&format!(" {asset}")).or_else(|| l.strip_suffix(&format!(" *{asset}")))).map(|h| h.trim().to_string());
     let got = hex::encode(Sha256::digest(&tarball));
     if want.as_deref() != Some(got.as_str()) {

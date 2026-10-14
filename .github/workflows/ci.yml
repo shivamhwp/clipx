@@ -12,6 +12,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo test --locked
       - run: cargo build --release --locked
+      # The update tests sign fake releases.
+      - run: sudo apt-get update && sudo apt-get install -y minisign
       - run: python3 apps/cli/tests/e2e.py target/release/clipx
 
   site:

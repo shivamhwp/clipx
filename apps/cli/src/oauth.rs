@@ -147,10 +147,15 @@ pub async fn complete(app: &Arc<App>, flow_id: &str, callback: &str) -> Result<A
     if code.is_empty() {
         return Err("no authorization code found in what you pasted".into());
     }
-    if let Some(s) = &state
-        && s != &flow.state {
-            return Err("state does not match this login; start again".into());
+    match &state {
+        Some(s) if s != &flow.state => return Err("state does not match this login; start again".into()),
+        // Google sign-in has no PKCE, so the state is the only proof this code came from
+        // our login and not from a page that loaded the local callback with its own code.
+        None if flow.provider == Provider::Gemini => {
+            return Err("paste the whole address from your browser's address bar, including state=".into());
         }
+        _ => {}
+    }
     let file = match flow.provider {
         Provider::Claude => exchange_claude(app, &flow, &code).await?,
         Provider::Codex => exchange_codex(app, &flow, &code).await?,

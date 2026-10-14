@@ -137,7 +137,14 @@ pub fn start_detached(home: &Path) -> Result<(), String> {
     if std::fs::metadata(&log_path).map(|m| m.len() > 10 << 20).unwrap_or(false) {
         let _ = std::fs::rename(&log_path, home.join("clipx.log.1"));
     }
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| e.to_string())?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let log = opts.open(&log_path).map_err(|e| e.to_string())?;
     let mut cmd = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
     cmd.arg("serve")
         .env("CLIPX_HOME", home)

@@ -62,6 +62,18 @@ pub fn rss_bytes() -> u64 {
         .unwrap_or(0)
 }
 
+/// Create a folder only this user can open (0700), and tighten it if it already exists.
+/// The clipx home holds sign-in tokens and keys.
+pub fn private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Write a file atomically with 0600 permissions.
 pub fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {

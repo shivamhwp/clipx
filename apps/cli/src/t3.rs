@@ -124,6 +124,9 @@ pub fn write(v: &Value) -> Result<(), String> {
     let perms = std::fs::metadata(&path).map(|m| m.permissions()).ok();
     let tmp = dir.join(format!(".settings.json.clipx-{}", crate::util::random_hex(4)));
     std::fs::write(&tmp, &data).map_err(|e| e.to_string())?;
+    // A new settings file holds clipx keys, so only this user may read it.
+    #[cfg(unix)]
+    let perms = perms.or_else(|| Some(std::os::unix::fs::PermissionsExt::from_mode(0o600)));
     if let Some(p) = perms {
         let _ = std::fs::set_permissions(&tmp, p);
     }

@@ -211,6 +211,7 @@ async fn update_account(State(app): State<Arc<App>>, Path(id): Path<String>, Jso
     if p.reset == Some(true) {
         let mut s = acc.state.lock().unwrap();
         s.cooldown_until = 0;
+        s.model_cooldowns.clear();
         s.last_error = None;
         s.needs_login = false;
     }

@@ -53,6 +53,11 @@ fn key_from_query(query: &str) -> Option<String> {
     url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == "key").map(|(_, v)| v.into_owned())
 }
 
+/// The query string minus the clipx key, so it is never forwarded upstream.
+fn without_key(query: &str) -> String {
+    query.split('&').filter(|p| p.split('=').next() != Some("key")).collect::<Vec<_>>().join("&")
+}
+
 pub fn provider_for_model(model: &str) -> Option<Provider> {
     let m = model.to_ascii_lowercase();
     if m.starts_with("claude") || ["opus", "sonnet", "haiku", "fable"].iter().any(|k| m.contains(k)) {
@@ -119,7 +124,7 @@ pub async fn entry(State(app): State<Arc<App>>, req: Request) -> Response {
     };
     app.stats.in_flight.fetch_add(1, Ordering::Relaxed);
     let _guard = InFlight(app.clone());
-    let ctx = Ctx { app, key, pin, headers: parts.headers, query: parts.uri.query().map(String::from), path: trimmed.to_string(), start: Instant::now() };
+    let ctx = Ctx { app, key, pin, headers: parts.headers, query: parts.uri.query().map(without_key).filter(|q| !q.is_empty()), path: trimmed.to_string(), start: Instant::now() };
     match trimmed {
         "/v1/messages" => messages(ctx, body, false).await,
         "/v1/messages/count_tokens" => messages(ctx, body, true).await,
@@ -127,6 +132,11 @@ pub async fn entry(State(app): State<Arc<App>>, req: Request) -> Response {
         p if p == "/v1/responses" || p == "/responses" => responses(ctx, body, "").await,
         p if p.starts_with("/v1/responses/") || p.starts_with("/responses/") => {
             let rest = p.split_once("/responses").map(|(_, r)| r.to_string()).unwrap_or_default();
+            // One plain segment, like /compact. The rest is pasted into the upstream URL, so
+            // `..` or an encoded slash could reach any other ChatGPT endpoint with the owner's token.
+            if rest.len() < 2 || !rest[1..].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+                return error(Style::OpenAI, StatusCode::NOT_FOUND, "not_found_error", &format!("clipx does not serve {trimmed}"));
+            }
             responses(ctx, body, &rest).await
         }
         p if p.starts_with("/v1beta/models/") => gemini_native(ctx, body, p.trim_start_matches("/v1beta/")).await,
@@ -154,7 +164,7 @@ struct Peek {
 const STRIP_REQ: &[&str] = &[
     "host", "authorization", "x-api-key", "api-key", "content-length", "connection", "keep-alive", "transfer-encoding", "te",
     "upgrade", "proxy-authorization", "proxy-connection", "accept-encoding", "cookie", "forwarded", "x-forwarded-for",
-    "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "origin", "referer", "x-clipx-tunnel",
+    "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "origin", "referer", "x-clipx-tunnel", "x-goog-api-key",
 ];
 
 fn claude_headers(client: &HeaderMap, native: bool, f: &AccountFile, version: &str, session: &str) -> HeaderMap {
@@ -163,7 +173,7 @@ fn claude_headers(client: &HeaderMap, native: bool, f: &AccountFile, version: &s
     if native {
         for (k, v) in client {
             let name = k.as_str();
-            if STRIP_REQ.contains(&name) || name.starts_with("cf-") {
+            if STRIP_REQ.contains(&name) || name.starts_with("cf-") || name.starts_with("tailscale-") {
                 continue;
             }
             if name == "anthropic-beta" {
@@ -690,7 +700,7 @@ where
     };
     let upstream_error = |s: StatusCode, b: &Bytes| format!("{s}: {}", error_text(b));
     while attempts < max {
-        let acc = match app.pick(provider, pin, &tried) {
+        let acc = match app.pick(provider, Some(model), pin, &tried) {
             Ok(a) => a,
             Err(e) => {
                 // Every account is now exhausted. The most useful response is the last
@@ -705,7 +715,10 @@ where
                     let msg = format!("upstream unreachable: {e}");
                     return Err(fail(error(style, StatusCode::BAD_GATEWAY, "api_error", &msg), &last_label, msg));
                 }
+                let next = app.next_available(provider, Some(model));
                 let status = match e {
+                    // Nothing is cooling down, so every account needs a sign-in or is off: waiting won't help.
+                    PickError::Exhausted(_) if next.is_none() => StatusCode::SERVICE_UNAVAILABLE,
                     PickError::Exhausted(_) | PickError::Unavailable(_, "cooling") => StatusCode::TOO_MANY_REQUESTS,
                     // A pinned account that is logged out or disabled won't come back by waiting.
                     PickError::NoAccounts(_) | PickError::Unavailable(..) => StatusCode::SERVICE_UNAVAILABLE,
@@ -713,7 +726,7 @@ where
                 };
                 let mut r = error(style, status, if status == StatusCode::TOO_MANY_REQUESTS { "rate_limit_error" } else { "api_error" }, &e.to_string());
                 if status == StatusCode::TOO_MANY_REQUESTS
-                    && let Some(at) = app.next_available(provider)
+                    && let Some(at) = next
                     && let Ok(v) = HeaderValue::from_str(&(at.saturating_sub(now())).max(1).to_string()) {
                         r.headers_mut().insert(header::RETRY_AFTER, v);
                     }
@@ -762,23 +775,32 @@ where
         tracing::warn!("{} {model}: upstream {status}: {snippet}", file.label);
         match status.as_u16() {
             401 | 403 => {
-                // Try one forced refresh on the same account before moving on.
+                // Try the same account once more with a fresh token before moving on.
+                let mut refresh_failed = false;
                 if !refreshed.contains(&id) && (file.linked.is_some() || (!file.no_refresh && file.refresh_token.is_some())) {
                     refreshed.push(id.clone());
                     let _guard = acc.refresh_lock.lock().await;
-                    if acc.file.read().unwrap().access_token == file.access_token && oauth::refresh(app, &acc).await.is_ok() {
+                    // A parallel request may have refreshed the token while this one waited.
+                    let already = acc.file.read().unwrap().access_token != file.access_token;
+                    if already || oauth::refresh(app, &acc).await.is_ok() {
                         attempts -= 1;
                         continue;
                     }
+                    // refresh() marks the account when the refresh token is dead. Anything
+                    // else, like a network error, is worth another try in a minute.
+                    refresh_failed = !acc.state.lock().unwrap().needs_login;
                 }
-                note_failure(&acc, &format!("{status}: {snippet}"), if status == 403 { 300 } else { 0 });
-                if status == 401 {
+                let cooldown = if refresh_failed { 60 } else if status == 403 { 300 } else { 0 };
+                note_failure(&acc, &format!("{status}: {snippet}"), cooldown);
+                if status == 401 && !refresh_failed {
                     acc.state.lock().unwrap().needs_login = true;
                 }
             }
             429 => {
                 let secs = cooldown_secs(provider, &headers, &body);
-                note_failure(&acc, &format!("rate limited for {secs}s: {snippet}"), secs);
+                note_failure(&acc, &format!("rate limited for {secs}s: {snippet}"), 0);
+                // Only this model family: an Opus limit leaves Sonnet usable on the same account.
+                acc.state.lock().unwrap().model_cooldowns.insert(crate::store::model_family(model).to_string(), now() + secs);
             }
             408 | 500 | 502 | 503 | 504 | 520..=599 => note_failure(&acc, &format!("{status}: {snippet}"), 0),
             _ => {
@@ -985,7 +1007,9 @@ impl Stream for Tap {
                 Poll::Ready(Some(Err(std::io::Error::other(e))))
             }
             Poll::Ready(None) => {
-                self.done(None);
+                // A stream that ended without its final event is logged as a failure.
+                let cut = (self.sse == Some(true)).then(|| translate::CUT_OFF.to_string());
+                self.done(cut);
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
@@ -1044,7 +1068,7 @@ impl Translator {
             Translator::CodexAnthropic(t) => t.on_event(ev, out),
         }
     }
-    fn finish(&mut self, out: &mut String) {
+    fn finish(&mut self, out: &mut String) -> Option<String> {
         match self {
             Translator::Claude(t) => t.finish(out),
             Translator::Codex(t) => t.finish(out),
@@ -1118,8 +1142,8 @@ impl Stream for Translate {
                     let this = &mut *self;
                     this.parser.finish(&mut this.events);
                     this.drain(&mut out);
-                    this.t.finish(&mut out);
-                    this.done(None);
+                    let cut = this.t.finish(&mut out);
+                    this.done(cut);
                     return Poll::Ready(if out.is_empty() { None } else { Some(Ok(Bytes::from(out))) });
                 }
                 Poll::Pending => return Poll::Pending,
@@ -1178,7 +1202,7 @@ async fn upstream_models(app: &Arc<App>, provider: Provider) -> Vec<String> {
         app.models_cache.lock().unwrap().insert(provider, (now(), list.clone()));
         return list;
     }
-    let Ok(acc) = app.pick(provider, None, &[]) else { return fallback() };
+    let Ok(acc) = app.pick(provider, None, None, &[]) else { return fallback() };
     let _ = oauth::ensure_fresh(app, &acc, 60).await;
     let f = acc.file.read().unwrap().clone();
     let upstream = app.cfg.read().unwrap().upstream.clone();
@@ -1232,6 +1256,13 @@ async fn models(app: &Arc<App>, pin: Option<&str>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_key_is_dropped() {
+        assert_eq!(without_key("beta=true&key=sk-clipx-1"), "beta=true");
+        assert_eq!(without_key("key=sk-clipx-1"), "");
+        assert_eq!(without_key("keyword=x&beta=true"), "keyword=x&beta=true");
+    }
 
     #[test]
     fn model_routing() {

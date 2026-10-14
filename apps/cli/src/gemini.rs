@@ -320,6 +320,7 @@ pub struct GeminiToChatStream {
     output: u64,
     cached: u64,
     finish: &'static str,
+    saw_finish: bool,
     done: bool,
 }
 
@@ -336,6 +337,7 @@ impl GeminiToChatStream {
             output: 0,
             cached: 0,
             finish: "stop",
+            saw_finish: false,
             done: false,
         }
     }
@@ -369,6 +371,7 @@ impl GeminiToChatStream {
         }
         if let Some(r) = cand["finishReason"].as_str() {
             self.finish = gemini_finish(r, self.next_tool > 0);
+            self.saw_finish = true;
         }
         if resp["usageMetadata"].is_object() {
             let (i, o, c) = usage_triplet(&resp["usageMetadata"]);
@@ -378,16 +381,25 @@ impl GeminiToChatStream {
         }
     }
 
-    pub fn finish(&mut self, out: &mut String) {
+    /// Called when the upstream stream ends. Returns the error to record when no chunk
+    /// carried a finishReason, after telling the client.
+    pub fn finish(&mut self, out: &mut String) -> Option<String> {
         if self.done {
-            return;
+            return None;
         }
         self.done = true;
+        if !self.saw_finish {
+            let msg = crate::translate::CUT_OFF;
+            out.push_str(&sse::frame(None, &json!({"error": {"message": msg, "type": "upstream_error"}}).to_string()));
+            out.push_str("data: [DONE]\n\n");
+            return Some(msg.to_string());
+        }
         out.push_str(&chat_chunk(&self.id, &self.model, self.created, json!({}), Some(self.finish)));
         if self.include_usage {
             out.push_str(&chat_usage_frame(&self.id, &self.model, self.created, chat_usage(self.input, self.output, self.cached)));
         }
         out.push_str("data: [DONE]\n\n");
+        None
     }
 }
 
@@ -442,8 +454,8 @@ impl Stream for ChatTranslate {
                     for ev in std::mem::take(&mut this.events) {
                         this.t.on_event(&ev, &mut out);
                     }
-                    this.t.finish(&mut out);
-                    this.done(None);
+                    let cut = this.t.finish(&mut out);
+                    this.done(cut);
                     return Poll::Ready(if out.is_empty() { None } else { Some(Ok(Bytes::from(out))) });
                 }
                 Poll::Pending => return Poll::Pending,
@@ -648,7 +660,7 @@ mod tests {
 
     #[test]
     fn gemini_stream_tool_call() {
-        let raw = concat!("data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"f\",\"args\":{\"a\":1}}}]},\"finishReason\":\"STOP\"}]}}\n\n");
+        let raw = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"f\",\"args\":{\"a\":1}}}]},\"finishReason\":\"STOP\"}]}}\n\n";
         let mut t = GeminiToChatStream::new("gemini-x", false);
         let mut out = String::new();
         for e in events(raw) {
