@@ -53,9 +53,14 @@ fn key_from_query(query: &str) -> Option<String> {
     url::form_urlencoded::parse(query.as_bytes()).find(|(k, _)| k == "key").map(|(_, v)| v.into_owned())
 }
 
-/// The query string minus the clipx key, so it is never forwarded upstream.
+/// The query string minus the clipx key, so it is never forwarded upstream. Names are
+/// decoded the same way `key_from_query` reads them, so `%6Bey=` is dropped too.
 fn without_key(query: &str) -> String {
-    query.split('&').filter(|p| p.split('=').next() != Some("key")).collect::<Vec<_>>().join("&")
+    query
+        .split('&')
+        .filter(|p| url::form_urlencoded::parse(p.as_bytes()).next().is_none_or(|(k, _)| k != "key"))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 pub fn provider_for_model(model: &str) -> Option<Provider> {
@@ -1262,6 +1267,8 @@ mod tests {
         assert_eq!(without_key("beta=true&key=sk-clipx-1"), "beta=true");
         assert_eq!(without_key("key=sk-clipx-1"), "");
         assert_eq!(without_key("keyword=x&beta=true"), "keyword=x&beta=true");
+        assert_eq!(without_key("%6Bey=sk-clipx-1&beta=true"), "beta=true");
+        assert_eq!(without_key("ke%79=sk-clipx-1"), "");
     }
 
     #[test]
