@@ -1,6 +1,6 @@
 //! The API proxy: client auth, account rotation, upstream calls, streaming with usage taps.
 
-use crate::app::{App, PickError, cooldown_secs, quota_from_headers};
+use crate::app::{App, PickError, cooldown_secs, limited_family, quota_from_headers};
 use crate::cloak;
 use crate::gemini;
 use crate::oauth;
@@ -807,9 +807,14 @@ where
             }
             429 => {
                 let secs = cooldown_secs(provider, &headers, &body);
-                note_failure(&acc, &format!("rate limited for {secs}s: {snippet}"), 0);
-                // Only this model family: an Opus limit leaves Sonnet usable on the same account.
-                acc.state.lock().unwrap().model_cooldowns.insert(crate::store::model_family(model).to_string(), now() + secs);
+                match limited_family(provider, &headers, model) {
+                    // An Opus-only limit leaves Sonnet usable on the same account.
+                    Some(family) => {
+                        note_failure(&acc, &format!("{family} rate limited for {secs}s: {snippet}"), 0);
+                        acc.state.lock().unwrap().model_cooldowns.insert(family, now() + secs);
+                    }
+                    None => note_failure(&acc, &format!("rate limited for {secs}s: {snippet}"), secs),
+                }
             }
             408 | 500 | 502 | 503 | 504 | 520..=599 => note_failure(&acc, &format!("{status}: {snippet}"), 0),
             _ => {
@@ -958,10 +963,17 @@ struct Tap {
     rec: Option<Recorder>,
     /// The final event went through; a hang-up after it is not a failure.
     complete: bool,
+    /// The stream ended properly, with its final event or an error event the client can read.
+    ended_well: bool,
+    finished: bool,
 }
 
 fn is_final_event(ev: &sse::Event) -> bool {
     matches!(ev.event.as_deref(), Some("message_stop" | "response.completed" | "response.incomplete" | "response.done")) || ev.data == "[DONE]"
+}
+
+fn is_error_event(ev: &sse::Event) -> bool {
+    matches!(ev.event.as_deref(), Some("error" | "response.failed"))
 }
 
 impl Tap {
@@ -977,6 +989,7 @@ impl Tap {
             self.parser.push(b, &mut self.events);
             for ev in self.events.drain(..) {
                 self.complete |= is_final_event(&ev);
+                self.ended_well |= is_final_event(&ev) || is_error_event(&ev);
                 absorb_usage(&mut self.tokens, &ev.data);
             }
         } else if self.buf.len() < 8 << 20 {
@@ -990,6 +1003,7 @@ impl Tap {
                 self.parser.finish(&mut self.events);
                 for ev in self.events.drain(..) {
                     self.complete |= is_final_event(&ev);
+                    self.ended_well |= is_final_event(&ev) || is_error_event(&ev);
                     absorb_usage(&mut self.tokens, &ev.data);
                 }
             } else {
@@ -1006,19 +1020,29 @@ impl Tap {
 impl Stream for Tap {
     type Item = Result<Bytes, std::io::Error>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.finished {
+            return Poll::Ready(None);
+        }
         match self.inner.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(b))) => {
                 self.feed(&b);
                 Poll::Ready(Some(Ok(b)))
             }
             Poll::Ready(Some(Err(e))) => {
+                self.finished = true;
                 self.done(Some(e.to_string()));
                 Poll::Ready(Some(Err(std::io::Error::other(e))))
             }
             Poll::Ready(None) => {
+                self.finished = true;
                 // A stream that ended without its final event is logged as a failure.
                 let cut = (self.sse == Some(true)).then(|| translate::CUT_OFF.to_string());
                 self.done(cut);
+                // The bytes pass through untouched, so the client can't be told in-band.
+                // Breaking the connection makes it see an error rather than a clean end.
+                if self.sse == Some(true) && !self.ended_well {
+                    return Poll::Ready(Some(Err(std::io::Error::other(translate::CUT_OFF))));
+                }
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
@@ -1056,6 +1080,8 @@ fn passthrough(mut rec: Recorder, resp: reqwest::Response, stream_hint: bool) ->
         tokens: Tokens::default(),
         rec: Some(rec),
         complete: false,
+        ended_well: false,
+        finished: false,
     };
     let mut r = Response::new(Body::from_stream(tap));
     *r.status_mut() = status;

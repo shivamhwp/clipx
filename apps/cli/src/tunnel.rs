@@ -355,6 +355,12 @@ fn tailscale_bin() -> Option<PathBuf> {
 /// Run a tailscale command with a deadline. Funnel can stop and wait for someone to
 /// approve it in the admin console; the deadline turns that into an error with the link.
 async fn ts(args: &[&str]) -> Result<String, String> {
+    ts_out(args).await.map(|(out, err)| format!("{out}{err}"))
+}
+
+/// Run tailscale; on success, its stdout and stderr kept apart, so JSON on stdout can be
+/// parsed even when tailscale prints a warning.
+async fn ts_out(args: &[&str]) -> Result<(String, String), String> {
     let bin = tailscale_bin().ok_or("tailscale is not installed")?;
     let child = tokio::process::Command::new(bin)
         .args(args)
@@ -369,10 +375,10 @@ async fn ts(args: &[&str]) -> Result<String, String> {
         Ok(o) => o.map_err(|e| e.to_string())?,
         Err(_) => return Err(format!("tailscale {} did not finish; it may be waiting for approval in the tailscale admin console", args[0])),
     };
-    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     if out.status.success() {
-        return Ok(text);
+        return Ok((String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned()));
     }
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     let text = text.trim();
     if text.contains("Access denied") || text.contains("permission") {
         return Err(format!("{text}. allow your user once with: sudo tailscale set --operator=$USER"));
@@ -409,7 +415,13 @@ async fn tailscale(app: Arc<App>) {
         let result = async {
             let host = tailscale_host().await?;
             // Re-apply only when our mount is missing, so a healthy setup is left alone.
-            let status: serde_json::Value = serde_json::from_str(&ts(&["serve", "status", "--json"]).await?).unwrap_or_default();
+            // Funnel's safety check below depends on this, so a status we can't read stops here.
+            let (out, _) = ts_out(&["serve", "status", "--json"]).await?;
+            let status: serde_json::Value = if out.trim().is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::from_str(&out).map_err(|e| format!("could not read `tailscale serve status --json`: {e}"))?
+            };
             let hp = format!("{host}:{port}");
             let mounted = status["Web"][&hp]["Handlers"]["/"]["Proxy"].as_str() == Some(target.as_str());
             let funneled = status["AllowFunnel"][&hp].as_bool() == Some(true);

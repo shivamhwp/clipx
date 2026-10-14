@@ -39,6 +39,8 @@ open(log, "a").write(" ".join(a) + "\\n")
 if a[:2] == ["status", "--json"]:
     print(json.dumps({{"BackendState": "Running", "Self": {{"DNSName": "box.tailnet.ts.net."}}}}))
 elif a[:2] == ["serve", "status"]:
+    # Real tailscale may warn on stderr while printing JSON on stdout.
+    print("Warning: client version differs from tailscaled", file=sys.stderr)
     print(open(state).read() if os.path.exists(state) else "{{}}")
 elif a[0] in ("funnel", "serve") and a[-1] == "off":
     port = next(x for x in a if x.startswith("--https=")).split("=")[1]
@@ -210,6 +212,16 @@ try:
         check(f"no client key leaks upstream {i}", KEY not in json.dumps(up))
         check(f"quota headers pass to client {i}", "anthropic-ratelimit-unified-5h-utilization" in h)
     check("rotation spread over healthy accounts", seen_tokens == {"Bearer claude-ok-b", "Bearer claude-ok-refreshed"}, seen_tokens)
+    # An upstream that closes before message_stop: the native stream breaks instead of
+    # ending cleanly, and the translated one ends with an error.
+    cut = {"model": "claude-cutoff", "max_tokens": 10, "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+    try:
+        out = req("POST", "/a/claude-b/v1/messages", cut, K, raw=True)
+    except http.client.IncompleteRead as e:
+        out = e
+    check("a cut-off native stream breaks the connection", isinstance(out, http.client.IncompleteRead) and b"partial" in out.partial, out)
+    s, h, body = req("POST", "/a/claude-b/v1/chat/completions", cut, K, raw=True)
+    check("a cut-off translated stream ends with an error", s == 200 and b"ended early" in body and b'"finish_reason":"stop"' not in body, body[-300:])
 
     s, st = req("GET", "/api/state", headers=A)
     accs = {a["label"]: a for a in st["accounts"]}
@@ -248,12 +260,18 @@ try:
     s, r = req("POST", "/v1/messages", {"model": "claude-x@claude-c", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K)
     up = last_upstream("/v1/messages")
     check("model@label pin", s == 200 and up["headers"]["authorization"] == "Bearer claude-ok-refreshed" and json.loads(up["body"])["model"] == "claude-x")
+    # Start clean: earlier requests also hit claude-a's shared five-hour limit.
+    req("PATCH", "/api/accounts/aaa", {"reset": True}, A)
+    s, r = req("POST", "/a/claude-a/v1/messages", {"model": "claude-sonnet-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K)
+    check("a sonnet-only limit", s == 429, (s, r))
     mock_reset()
     s, h, r = req("POST", "/a/claude-a/v1/messages", {"model": "claude-sonnet-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K, raw=True)
     check("pinned cooling account refuses that model", s == 429 and not mock_log(), (s, r))
     check("its retry-after is that account's own", 60 < int(h.get("retry-after", 0)) <= 120, h.get("retry-after"))
     s, r = req("POST", "/a/claude-a/v1/messages", {"model": "claude-opus-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K)
     check("a sonnet limit leaves opus on the same account", s == 429 and len(mock_log()) == 1, (s, r))
+    a = {x["label"]: x for x in req("GET", "/api/state", headers=A)[1]["accounts"]}["claude-a"]
+    check("a shared limit cools the whole account", a["status"] == "cooling" and a["cooldown_until"] > time.time() + 60, a)
     off = next(a["label"] for a in req("GET", "/api/state", headers=A)[1]["accounts"] if a["status"] == "disabled")
     s, h, body = req("POST", f"/a/{off}/v1/messages", {"model": "claude-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K, raw=True)
     check("pinned disabled account is not a rate limit", s == 503 and b"rate_limit" not in body and "retry-after" not in h, (s, body))
@@ -383,6 +401,12 @@ try:
 
     s, h, body = req("POST", "/v1beta/models/gemini-x:streamGenerateContent?alt=sse", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K, raw=True)
     check("native streamGenerateContent", s == 200 and b'"text":"hello' in body and b"finishReason" in body, body[:300])
+    try:
+        out = req("POST", "/v1beta/models/gemini-cutoff:streamGenerateContent?alt=sse", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K, raw=True)
+    except http.client.IncompleteRead as e:
+        out = e
+    check("a cut-off native gemini stream breaks the connection", isinstance(out, http.client.IncompleteRead) and b"hello" in out.partial, out)
+    check("and is logged as a failure", req("GET", "/api/requests", headers=A)[1][0]["error"] == "the upstream stream ended early")
 
     s, r = req("POST", "/v1beta/models/gemini-x:countTokens", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K)
     check("native countTokens", s == 200 and r["totalTokens"] == 9, r)

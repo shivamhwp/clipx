@@ -131,7 +131,9 @@ class H(BaseHTTPRequestHandler):
             "request-id": "req_mock",
         }
         if tok == "claude-limited":
-            return self.send(429, {"type": "error", "error": {"type": "rate_limit_error", "message": "limited"}}, {"anthropic-ratelimit-unified-reset": str(int(time.time()) + 120), "anthropic-ratelimit-unified-status": "rejected"})
+            # Sonnet's weekly limit is used up; everything else hits the shared five-hour one.
+            claim = "seven_day_sonnet" if "sonnet" in json.loads(raw or b"{}").get("model", "") else "five_hour"
+            return self.send(429, {"type": "error", "error": {"type": "rate_limit_error", "message": "limited"}}, {"anthropic-ratelimit-unified-reset": str(int(time.time()) + 120), "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-representative-claim": claim})
         if tok in ("claude-dead", "claude-old"):
             return self.send(401, {"type": "error", "error": {"type": "authentication_error", "message": "invalid token"}})
         if not tok.startswith("claude-ok"):
@@ -153,6 +155,11 @@ class H(BaseHTTPRequestHandler):
         w = self.wfile
         w.write(sse("message_start", {"type": "message_start", "message": {"id": "msg_1", "model": req["model"], "usage": {"input_tokens": 11, "output_tokens": 1}}}))
         w.write(sse("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}))
+        if "cutoff" in req["model"]:
+            # The upstream closes cleanly before message_stop.
+            w.write(sse("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "partial"}}))
+            w.flush()
+            return
         for part in [text[:5], text[5:]]:
             w.write(sse("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": part}}))
             w.flush()
@@ -213,6 +220,8 @@ class H(BaseHTTPRequestHandler):
             w = self.wfile
             w.write(gsse({"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": text[:5]}]}}]}}))
             w.flush()
+            if b"cutoff" in raw:
+                return
             w.write(gsse({"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": text[5:]}]}, "finishReason": "STOP"}], "usageMetadata": usage}}))
             w.flush()
             return

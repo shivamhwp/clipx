@@ -220,6 +220,21 @@ pub fn quota_from_headers(provider: Provider, h: &HeaderMap) -> Vec<QuotaWindow>
 }
 
 /// How long to rest an account after a 429.
+/// The model family a 429 is limited to, or None when the whole account is out.
+/// Claude names the limit it hit (`seven_day_opus` is Opus only, `five_hour` is everything).
+/// ChatGPT's usage windows are shared by all models. Gemini quotas are per model.
+pub fn limited_family(provider: Provider, h: &HeaderMap, model: &str) -> Option<String> {
+    match provider {
+        Provider::Claude => {
+            let claim = h.get("anthropic-ratelimit-unified-representative-claim").and_then(|v| v.to_str().ok())?;
+            let family = crate::store::model_family(claim);
+            (family != claim).then(|| family.to_string())
+        }
+        Provider::Codex => None,
+        Provider::Gemini => Some(crate::store::model_family(model).to_string()),
+    }
+}
+
 pub fn cooldown_secs(provider: Provider, h: &HeaderMap, body: &[u8]) -> u64 {
     let t = now();
     if let Some(secs) = h.get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok())
@@ -279,6 +294,16 @@ mod tests {
             h.insert(HeaderName::from_bytes(k.as_bytes()).unwrap(), HeaderValue::from_str(v).unwrap());
         }
         h
+    }
+
+    #[test]
+    fn rate_limit_scope() {
+        let claim = |c: &str| headers(&[("anthropic-ratelimit-unified-representative-claim", c)]);
+        assert_eq!(limited_family(Provider::Claude, &claim("seven_day_opus"), "claude-sonnet-5-5").as_deref(), Some("opus"));
+        assert_eq!(limited_family(Provider::Claude, &claim("five_hour"), "claude-opus-5-5"), None);
+        assert_eq!(limited_family(Provider::Claude, &HeaderMap::new(), "claude-opus-5-5"), None);
+        assert_eq!(limited_family(Provider::Codex, &HeaderMap::new(), "gpt-5.6-sol"), None);
+        assert_eq!(limited_family(Provider::Gemini, &HeaderMap::new(), "gemini-3-pro").as_deref(), Some("pro"));
     }
 
     #[test]

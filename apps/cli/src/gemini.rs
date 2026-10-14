@@ -496,6 +496,10 @@ struct NativeUnwrap {
     tokens: Tokens,
     rec: Option<Recorder>,
     ended: bool,
+    /// A chunk carried a finishReason or an error, so the stream ended properly.
+    ended_well: bool,
+    /// Break the connection after the last bytes go out: the stream was cut off.
+    fail_next: bool,
 }
 
 impl NativeUnwrap {
@@ -509,6 +513,7 @@ impl NativeUnwrap {
             let Ok(v) = serde_json::from_str::<Value>(&ev.data) else { continue };
             let inner = unwrap_envelope(&v);
             absorb_usage(&mut self.tokens, &inner["usageMetadata"]);
+            self.ended_well |= inner["candidates"][0]["finishReason"].is_string() || inner["error"].is_object();
             out.push_str(&sse::frame(None, &inner.to_string()));
         }
     }
@@ -519,6 +524,9 @@ impl Stream for NativeUnwrap {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             if self.ended {
+                if std::mem::take(&mut self.fail_next) {
+                    return Poll::Ready(Some(Err(std::io::Error::other(crate::translate::CUT_OFF))));
+                }
                 return Poll::Ready(None);
             }
             let mut out = String::new();
@@ -541,8 +549,15 @@ impl Stream for NativeUnwrap {
                     let this = &mut *self;
                     this.parser.finish(&mut this.events);
                     this.drain(&mut out);
-                    this.done(None);
-                    return Poll::Ready(if out.is_empty() { None } else { Some(Ok(Bytes::from(out))) });
+                    // Cut off before a finishReason: log a failure and break the connection
+                    // after these last bytes, so the client sees an error, not a clean end.
+                    let cut = (!this.ended_well).then(|| crate::translate::CUT_OFF.to_string());
+                    this.fail_next = cut.is_some();
+                    this.done(cut);
+                    if out.is_empty() {
+                        continue;
+                    }
+                    return Poll::Ready(Some(Ok(Bytes::from(out))));
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -558,7 +573,7 @@ impl Drop for NativeUnwrap {
 
 /// Builds the native `:streamGenerateContent` response, unwrapping the Code Assist envelope.
 pub fn native_stream_response(rec: Recorder, resp: reqwest::Response) -> Response {
-    let s = NativeUnwrap { inner: Box::pin(resp.bytes_stream()), parser: sse::Parser::default(), events: Vec::new(), tokens: Tokens::default(), rec: Some(rec), ended: false };
+    let s = NativeUnwrap { inner: Box::pin(resp.bytes_stream()), parser: sse::Parser::default(), events: Vec::new(), tokens: Tokens::default(), rec: Some(rec), ended: false, ended_well: false, fail_next: false };
     let mut r = Response::new(Body::from_stream(s));
     sse_headers(&mut r);
     r
