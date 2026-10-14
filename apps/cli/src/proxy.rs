@@ -968,12 +968,23 @@ struct Tap {
     finished: bool,
 }
 
+/// An event's type: its `event:` line, or for data-only frames the JSON `type`.
+fn event_kind(ev: &sse::Event) -> Option<String> {
+    if let Some(e) = &ev.event {
+        return Some(e.clone());
+    }
+    if !ev.data.starts_with('{') {
+        return None;
+    }
+    serde_json::from_str::<Value>(&ev.data).ok()?["type"].as_str().map(String::from)
+}
+
 fn is_final_event(ev: &sse::Event) -> bool {
-    matches!(ev.event.as_deref(), Some("message_stop" | "response.completed" | "response.incomplete" | "response.done")) || ev.data == "[DONE]"
+    ev.data == "[DONE]" || matches!(event_kind(ev).as_deref(), Some("message_stop" | "response.completed" | "response.incomplete" | "response.done"))
 }
 
 fn is_error_event(ev: &sse::Event) -> bool {
-    matches!(ev.event.as_deref(), Some("error" | "response.failed"))
+    matches!(event_kind(ev).as_deref(), Some("error" | "response.failed"))
 }
 
 impl Tap {
@@ -1291,6 +1302,17 @@ async fn models(app: &Arc<App>, pin: Option<&str>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_events_by_name_or_json_type() {
+        let ev = |event: Option<&str>, data: &str| sse::Event { event: event.map(String::from), data: data.to_string() };
+        assert!(is_final_event(&ev(Some("message_stop"), "{}")));
+        assert!(is_final_event(&ev(None, r#"{"type":"response.done","response":{}}"#)));
+        assert!(is_final_event(&ev(None, "[DONE]")));
+        assert!(!is_final_event(&ev(None, r#"{"type":"response.output_text.delta"}"#)));
+        assert!(is_error_event(&ev(None, r#"{"type":"response.failed","response":{}}"#)));
+        assert!(is_error_event(&ev(Some("error"), "{}")));
+    }
 
     #[test]
     fn query_key_is_dropped() {

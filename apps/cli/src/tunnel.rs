@@ -388,7 +388,8 @@ async fn ts_out(args: &[&str]) -> Result<(String, String), String> {
 
 /// This machine's name on the tailnet, e.g. box.tail1234.ts.net.
 async fn tailscale_host() -> Result<String, String> {
-    let v: serde_json::Value = serde_json::from_str(&ts(&["status", "--json"]).await?).map_err(|e| e.to_string())?;
+    // stdout only: tailscale may also print a warning on stderr.
+    let v: serde_json::Value = serde_json::from_str(&ts_out(&["status", "--json"]).await?.0).map_err(|e| format!("could not read `tailscale status --json`: {e}"))?;
     if v["BackendState"] != "Running" {
         return Err(format!("tailscale is {}; run `tailscale up`", v["BackendState"].as_str().unwrap_or("not running")));
     }

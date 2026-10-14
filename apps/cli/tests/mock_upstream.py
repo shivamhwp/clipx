@@ -186,6 +186,13 @@ class H(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         w = self.wfile
+        if "dataonly" in req.get("model", ""):
+            # Frames with no event: line; the JSON type says what each one is.
+            for f in [{"type": "response.created", "response": {"id": "resp_1"}}, {"type": "response.output_text.delta", "delta": "hi"},
+                      {"type": "response.done", "response": {"id": "resp_1", "status": "completed", "output": [], "usage": {"input_tokens": 1, "output_tokens": 1}}}]:
+                w.write(f"data: {json.dumps(f)}\n\n".encode())
+            w.flush()
+            return
         item = {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "codex says hi"}]}
         w.write(sse("response.created", {"type": "response.created", "response": {"id": "resp_1"}}))
         if req.get("tools"):
@@ -218,6 +225,11 @@ class H(BaseHTTPRequestHandler):
             self.send_header("content-type", "text/event-stream")
             self.end_headers()
             w = self.wfile
+            if b"blocked" in raw:
+                # A prompt blocked for safety: no candidates, just the reason.
+                w.write(gsse({"response": {"promptFeedback": {"blockReason": "SAFETY"}}}))
+                w.flush()
+                return
             w.write(gsse({"response": {"candidates": [{"content": {"role": "model", "parts": [{"text": text[:5]}]}}]}}))
             w.flush()
             if b"cutoff" in raw:

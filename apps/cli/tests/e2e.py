@@ -37,6 +37,7 @@ state, log = os.path.join(d, "ts-state.json"), os.path.join(d, "ts.log")
 a = sys.argv[1:]
 open(log, "a").write(" ".join(a) + "\\n")
 if a[:2] == ["status", "--json"]:
+    print("Warning: client version differs from tailscaled", file=sys.stderr)
     print(json.dumps({{"BackendState": "Running", "Self": {{"DNSName": "box.tailnet.ts.net."}}}}))
 elif a[:2] == ["serve", "status"]:
     # Real tailscale may warn on stderr while printing JSON on stdout.
@@ -304,6 +305,8 @@ try:
     time.sleep(0.2)
     last = req("GET", "/api/requests?limit=1", headers=A)[1][0]
     check("usage read from untyped codex stream", last["input"] == 20 and last["output"] == 4, last)
+    s, h, body = req("POST", "/v1/responses", {"model": "gpt-dataonly", "input": "hi", "stream": True}, K, raw=True)
+    check("a data-only codex stream that finishes is not cut", s == 200 and b"response.done" in body, body[-200:])
     up = last_upstream("/codex/responses")["headers"]
     check("codex headers", up["originator"] == "codex_cli_rs" and up["user-agent"].startswith("codex_cli_rs/0.160.1") and up["chatgpt-account-id"] == "acct-123")
 
@@ -407,6 +410,10 @@ try:
         out = e
     check("a cut-off native gemini stream breaks the connection", isinstance(out, http.client.IncompleteRead) and b"hello" in out.partial, out)
     check("and is logged as a failure", req("GET", "/api/requests", headers=A)[1][0]["error"] == "the upstream stream ended early")
+    s, h, body = req("POST", "/v1beta/models/gemini-blocked:streamGenerateContent?alt=sse", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K, raw=True)
+    check("a prompt blocked for safety is a normal end", s == 200 and b"blockReason" in body, body[-200:])
+    s, h, body = req("POST", "/v1/chat/completions", {"model": "gemini-blocked", "stream": True, "messages": [{"role": "user", "content": "hi"}]}, K, raw=True)
+    check("and reads as content_filter in chat", s == 200 and b'"finish_reason":"content_filter"' in body and b"ended early" not in body, body[-300:])
 
     s, r = req("POST", "/v1beta/models/gemini-x:countTokens", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K)
     check("native countTokens", s == 200 and r["totalTokens"] == 9, r)

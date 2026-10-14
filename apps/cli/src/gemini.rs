@@ -373,6 +373,11 @@ impl GeminiToChatStream {
             self.finish = gemini_finish(r, self.next_tool > 0);
             self.saw_finish = true;
         }
+        // A prompt blocked for safety ends with only this, no candidates at all.
+        if resp["promptFeedback"]["blockReason"].is_string() {
+            self.finish = "content_filter";
+            self.saw_finish = true;
+        }
         if resp["usageMetadata"].is_object() {
             let (i, o, c) = usage_triplet(&resp["usageMetadata"]);
             self.input = i;
@@ -513,7 +518,7 @@ impl NativeUnwrap {
             let Ok(v) = serde_json::from_str::<Value>(&ev.data) else { continue };
             let inner = unwrap_envelope(&v);
             absorb_usage(&mut self.tokens, &inner["usageMetadata"]);
-            self.ended_well |= inner["candidates"][0]["finishReason"].is_string() || inner["error"].is_object();
+            self.ended_well |= inner["candidates"][0]["finishReason"].is_string() || inner["promptFeedback"]["blockReason"].is_string() || inner["error"].is_object();
             out.push_str(&sse::frame(None, &inner.to_string()));
         }
     }
@@ -671,6 +676,31 @@ mod tests {
         assert!(out.contains("\"finish_reason\":\"stop\""));
         assert!(out.contains("\"prompt_tokens\":3"));
         assert!(out.ends_with("data: [DONE]\n\n"));
+    }
+
+    #[test]
+    fn gemini_stream_prompt_block_is_a_finish() {
+        let raw = "data: {\"response\":{\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}}\n\n";
+        let mut t = GeminiToChatStream::new("gemini-x", false);
+        let mut out = String::new();
+        for e in events(raw) {
+            t.on_event(&e, &mut out);
+        }
+        assert_eq!(t.finish(&mut out), None);
+        assert!(out.contains("\"finish_reason\":\"content_filter\""));
+        assert!(!out.contains("ended early"));
+    }
+
+    #[test]
+    fn gemini_stream_cut_off() {
+        let raw = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hel\"}]}}]}}\n\n";
+        let mut t = GeminiToChatStream::new("gemini-x", false);
+        let mut out = String::new();
+        for e in events(raw) {
+            t.on_event(&e, &mut out);
+        }
+        assert_eq!(t.finish(&mut out).as_deref(), Some(crate::translate::CUT_OFF));
+        assert!(!out.contains("finish_reason\":\"stop"));
     }
 
     #[test]
