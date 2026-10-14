@@ -489,7 +489,7 @@ function connect(){
   // What to try next when Tailscale refuses Funnel, the most common setup failure.
   const fix=c.mode==='tailscale'&&!c.tailnet_only&&/funnel/i.test(t.error||'')?' Turn on Tailnet only below to keep it on your own devices, or pick Cloudflare for a public address.':'';
   const fields=m==='tailscale'?`
-    ${row('HTTPS port','Funnel works on 443, 8443 and 10000. clipx takes <code>/</code> on that port. Funnel makes the whole port public, so clipx won't use one that serves other paths.',`<select id="tsport" style="width:110px">${[443,8443,10000].map(p=>`<option ${p===c.ts_port?'selected':''}>${p}</option>`).join('')}</select>`)}
+    ${row('HTTPS port','Funnel works on 443, 8443 and 10000. clipx takes <code>/</code> on that port. Funnel makes the whole port public, so clipx will not use one that serves other paths.',`<select id="tsport" style="width:110px">${[443,8443,10000].map(p=>`<option ${p===c.ts_port?'selected':''}>${p}</option>`).join('')}</select>`)}
     ${row('Tailnet only','Keep the address on your own devices instead of the internet.',sw(c.tailnet_only,"this.classList.toggle('on')").replace('class="sw','id="tsonly" class="sw'))}`
   :m==='relay'?`
     ${row('Relay URL','',`<input id="rurl" value="${esc(c.relay||'')}" placeholder="https://relay.example.com" style="width:260px">`)}

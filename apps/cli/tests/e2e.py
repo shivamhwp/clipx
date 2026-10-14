@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -162,6 +163,13 @@ try:
     A = {"authorization": "Bearer " + ADMIN}
     K = {"authorization": "Bearer " + KEY}
     server = start_serve()
+    # The dashboard is one inline script; a syntax error there leaves a blank page.
+    s, _, page = req("GET", "/", raw=True)
+    script = os.path.join(HOME, "dashboard.js")
+    open(script, "w").write(re.findall(r"<script>(.*?)</script>", page.decode(), re.S)[-1])
+    node = shutil.which("node")
+    out = subprocess.run([node, "--check", script], capture_output=True, text=True) if node else None
+    check("dashboard script parses", s == 200 and (out is None or out.returncode == 0), out and out.stderr)
 
     accounts = [
         {"id": "aaa", "provider": "claude", "label": "claude-a", "email": "a@x", "access_token": "claude-limited", "expires_at": 0},
