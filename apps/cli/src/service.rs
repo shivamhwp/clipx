@@ -145,6 +145,12 @@ pub fn start_detached(home: &Path) -> Result<(), String> {
         opts.mode(0o600);
     }
     let log = opts.open(&log_path).map_err(|e| e.to_string())?;
+    // The mode above only applies to a new file; tighten a log left by an older clipx.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = log.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
     let mut cmd = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
     cmd.arg("serve")
         .env("CLIPX_HOME", home)

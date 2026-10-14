@@ -9,14 +9,15 @@
 #   curl -fsSL https://clix.lakebed.app/install | sh -s -- --relay https://relay.example.com --name mybox
 #   curl -fsSL https://clix.lakebed.app/install | sh -s -- --tunnel off --public
 #
-# CLIPX_REPO, CLIPX_VERSION (a tag, default latest), CLIPX_DOWNLOAD_BASE (a mirror) and
-# CLIPX_INSTALL_DIR override defaults. CLIPX_NO_SETUP=1 installs the binary only, for a
+# CLIPX_REPO, CLIPX_VERSION (a tag, default latest), CLIPX_DOWNLOAD_BASE (a mirror),
+# CLIPX_RELEASE_KEY and CLIPX_INSTALL_DIR override defaults. CLIPX_NO_SETUP=1 installs the binary only, for a
 # machine that runs T3 Code but uses clipx from another machine (`clipx t3 --server`).
 set -eu
 
 # Releases sign SHA256SUMS with this minisign key (minisign.pub in the repo). When
-# minisign is installed, the download is checked against it too.
-RELEASE_KEY=RWSDOk8y8H3Zm0Gl9QWbqPwkgesR+ur/nG+ZvB6naZK2Rh/2YtsXztzk
+# minisign is installed, the download is checked against it too. CLIPX_RELEASE_KEY
+# replaces it for a fork that signs its own releases, as it does for `clipx update`.
+RELEASE_KEY="${CLIPX_RELEASE_KEY:-RWSDOk8y8H3Zm0Gl9QWbqPwkgesR+ur/nG+ZvB6naZK2Rh/2YtsXztzk}"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'clipx install: %s\n' "$*" >&2; exit 1; }

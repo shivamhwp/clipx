@@ -720,7 +720,11 @@ where
                     let msg = format!("upstream unreachable: {e}");
                     return Err(fail(error(style, StatusCode::BAD_GATEWAY, "api_error", &msg), &last_label, msg));
                 }
-                let next = app.next_available(provider, Some(model));
+                // A pinned request waits for its own account, not whichever account frees up first.
+                let next = match pin {
+                    Some(p) => app.store.get(p).map(|a| a.free_at(Some(model))).filter(|&t| t > now()),
+                    None => app.next_available(provider, Some(model)),
+                };
                 let status = match e {
                     // Nothing is cooling down, so every account needs a sign-in or is off: waiting won't help.
                     PickError::Exhausted(_) if next.is_none() => StatusCode::SERVICE_UNAVAILABLE,
