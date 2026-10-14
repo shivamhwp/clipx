@@ -123,7 +123,22 @@ pub fn write(v: &Value) -> Result<(), String> {
     data.push(b'\n');
     let perms = std::fs::metadata(&path).map(|m| m.permissions()).ok();
     let tmp = dir.join(format!(".settings.json.clipx-{}", crate::util::random_hex(4)));
-    std::fs::write(&tmp, &data).map_err(|e| e.to_string())?;
+    // Created 0600, so the keys are never readable by others, even before the final mode is set.
+    {
+        use std::io::Write;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp).map_err(|e| e.to_string())?;
+        f.write_all(&data).map_err(|e| e.to_string())?;
+    }
+    // A new settings file holds clipx keys, so only this user may read it.
+    #[cfg(unix)]
+    let perms = perms.or_else(|| Some(std::os::unix::fs::PermissionsExt::from_mode(0o600)));
     if let Some(p) = perms {
         let _ = std::fs::set_permissions(&tmp, p);
     }

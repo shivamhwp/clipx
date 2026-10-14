@@ -243,7 +243,10 @@ function Docs() {
       <Section id="install" title="Install">
         <p>It downloads clipx, one 9 MB file that uses about 7 MB of memory, and walks you through setup:</p>
         <ol className="list-decimal space-y-2 pl-5">
-          <li>Runs clipx as a background service and makes it reachable from your other machines.</li>
+          <li>
+            Runs clipx as a background service. If Tailscale is running, it puts clipx on your tailnet so your own devices can reach
+            it. Otherwise it asks before giving clipx a public address.
+          </li>
           <li>
             Signs you in to your Claude, ChatGPT and Gemini accounts. Add as many as you want. If you already use CLIProxyAPI, it can
             reuse those logins.
@@ -262,6 +265,11 @@ function Docs() {
         <p>
           To update, run <C>clipx update</C>. To remove it, run <C>clipx uninstall</C>.
         </p>
+        <p>
+          Releases are signed with minisign. <C>clipx update</C> won't install a release whose signature doesn't match, and the
+          installer checks it too when minisign is installed. To check a download yourself:
+        </p>
+        <Code copy>{"minisign -Vm SHA256SUMS -P RWSDOk8y8H3Zm0Gl9QWbqPwkgesR+ur/nG+ZvB6naZK2Rh/2YtsXztzk"}</Code>
         <p>
           To pass options to setup, put them after <C>sh -s --</C>:
         </p>
@@ -312,8 +320,12 @@ function Docs() {
         <p>You only need this to use clipx from other machines. T3 already reaches it through T3 Connect.</p>
         <ul className="list-disc space-y-2 pl-5">
           <li>
-            <C>clipx connect tailscale</C> gives you a fixed <C>https://&lt;box&gt;.&lt;tailnet&gt;.ts.net</C> address. clipx picks
-            this when Tailscale is running.
+            <C>clipx connect tailscale --tailnet-only</C> gives you a fixed <C>https://&lt;box&gt;.&lt;tailnet&gt;.ts.net</C> address
+            that only your own devices can reach. Setup picks this when Tailscale is running.
+          </li>
+          <li>
+            <C>clipx connect tailscale</C> puts that address on the internet with Tailscale Funnel. Funnel opens the whole port, so
+            clipx won't use a port that already serves something else.
           </li>
           <li>
             <C>clipx connect cloudflare</C> works without an account, but the address changes every restart.

@@ -39,7 +39,22 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+      - uses: actions/checkout@v4
+        with:
+          path: src
+          sparse-checkout: minisign.pub
+          sparse-checkout-cone-mode: false
       - run: sha256sum clipx-*.tar.gz > SHA256SUMS
-      - run: gh release create "$GITHUB_REF_NAME" clipx-*.tar.gz SHA256SUMS --repo "$GITHUB_REPOSITORY" --generate-notes
+      # Sign the checksums. clipx update refuses a release without a valid signature.
+      - run: cargo install rsign2 --version 0.6.7 --locked
+      - run: |
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/clipx.key"
+          rsign sign -W -s "$RUNNER_TEMP/clipx.key" -t "clipx $GITHUB_REF_NAME" -x SHA256SUMS.minisig SHA256SUMS
+          rm "$RUNNER_TEMP/clipx.key"
+          rsign verify -p src/minisign.pub -x SHA256SUMS.minisig SHA256SUMS
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+      - run: gh release create "$GITHUB_REF_NAME" clipx-*.tar.gz SHA256SUMS SHA256SUMS.minisig --repo "$GITHUB_REPOSITORY" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

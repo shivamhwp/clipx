@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -36,8 +37,11 @@ state, log = os.path.join(d, "ts-state.json"), os.path.join(d, "ts.log")
 a = sys.argv[1:]
 open(log, "a").write(" ".join(a) + "\\n")
 if a[:2] == ["status", "--json"]:
+    print("Warning: client version differs from tailscaled", file=sys.stderr)
     print(json.dumps({{"BackendState": "Running", "Self": {{"DNSName": "box.tailnet.ts.net."}}}}))
 elif a[:2] == ["serve", "status"]:
+    # Real tailscale may warn on stderr while printing JSON on stdout.
+    print("Warning: client version differs from tailscaled", file=sys.stderr)
     print(open(state).read() if os.path.exists(state) else "{{}}")
 elif a[0] in ("funnel", "serve") and a[-1] == "off":
     port = next(x for x in a if x.startswith("--https=")).split("=")[1]
@@ -149,10 +153,26 @@ try:
     out = subprocess.run([BIN, "setup", "--no-service", "--tunnel", "off", "--port", str(PORT)], env=ENV, capture_output=True, text=True)
     check("setup writes config", out.returncode == 0, out.stderr)
     KEY = re.search(r"api key\s+(sk-clipx-\S+)", out.stdout).group(1)
+    # A fresh setup is never public unless asked: Tailscale stays in the tailnet, and
+    # without it (and nobody to ask) remote access is off.
+    import tomllib
+    for name, path, mode, tailnet in [("with tailscale", ENV["PATH"], "tailscale", True), ("without tailscale", os.defpath, "off", False)]:
+        h = os.path.join(HOME, "fresh-" + name.replace(" ", "-"))
+        out = subprocess.run([BIN, "setup", "--no-service"], env=dict(ENV, CLIPX_HOME=h, PATH=path), capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        c = tomllib.load(open(os.path.join(h, "config.toml"), "rb"))["connect"]
+        check(f"fresh setup {name} is private", out.returncode == 0 and c["mode"] == mode and c.get("tailnet_only", False) == tailnet, (out.stderr, c))
+        check(f"clipx home {name} is private", os.stat(h).st_mode & 0o777 == 0o700, oct(os.stat(h).st_mode))
     ADMIN = re.search(r'admin_token = "([^"]+)"', open(os.path.join(HOME, "config.toml")).read()).group(1)
     A = {"authorization": "Bearer " + ADMIN}
     K = {"authorization": "Bearer " + KEY}
     server = start_serve()
+    # The dashboard is one inline script; a syntax error there leaves a blank page.
+    s, _, page = req("GET", "/", raw=True)
+    script = os.path.join(HOME, "dashboard.js")
+    open(script, "w").write(re.findall(r"<script>(.*?)</script>", page.decode(), re.S)[-1])
+    node = shutil.which("node")
+    out = subprocess.run([node, "--check", script], capture_output=True, text=True) if node else None
+    check("dashboard script parses", s == 200 and (out is None or out.returncode == 0), out and out.stderr)
 
     accounts = [
         {"id": "aaa", "provider": "claude", "label": "claude-a", "email": "a@x", "access_token": "claude-limited", "expires_at": 0},
@@ -193,10 +213,20 @@ try:
         check(f"no client key leaks upstream {i}", KEY not in json.dumps(up))
         check(f"quota headers pass to client {i}", "anthropic-ratelimit-unified-5h-utilization" in h)
     check("rotation spread over healthy accounts", seen_tokens == {"Bearer claude-ok-b", "Bearer claude-ok-refreshed"}, seen_tokens)
+    # An upstream that closes before message_stop: the native stream breaks instead of
+    # ending cleanly, and the translated one ends with an error.
+    cut = {"model": "claude-cutoff", "max_tokens": 10, "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+    try:
+        out = req("POST", "/a/claude-b/v1/messages", cut, K, raw=True)
+    except http.client.IncompleteRead as e:
+        out = e
+    check("a cut-off native stream breaks the connection", isinstance(out, http.client.IncompleteRead) and b"partial" in out.partial, out)
+    s, h, body = req("POST", "/a/claude-b/v1/chat/completions", cut, K, raw=True)
+    check("a cut-off translated stream ends with an error", s == 200 and b"ended early" in body and b'"finish_reason":"stop"' not in body, body[-300:])
 
     s, st = req("GET", "/api/state", headers=A)
     accs = {a["label"]: a for a in st["accounts"]}
-    check("429 account cooling", accs["claude-a"]["status"] == "cooling" and accs["claude-a"]["cooldown_until"] > time.time() + 60, accs["claude-a"])
+    check("429 cools only that model family", accs["claude-a"]["status"] == "ready" and accs["claude-a"]["model_cooldowns"].get("sonnet", 0) > time.time() + 60, accs["claude-a"])
     check("401 account refreshed", accs["claude-c"]["status"] == "ready" and accs["claude-c"]["last_refresh"] > 0, accs["claude-c"])
     saved = json.load(open(os.path.join(HOME, "accounts", "ccc.json")))
     check("refreshed token persisted", saved["access_token"] == "claude-ok-refreshed" and saved["refresh_token"] == "claude-rt-good-2", saved)
@@ -231,8 +261,18 @@ try:
     s, r = req("POST", "/v1/messages", {"model": "claude-x@claude-c", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K)
     up = last_upstream("/v1/messages")
     check("model@label pin", s == 200 and up["headers"]["authorization"] == "Bearer claude-ok-refreshed" and json.loads(up["body"])["model"] == "claude-x")
-    s, r = req("POST", "/a/claude-a/v1/messages", {"model": "claude-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K)
-    check("pinned cooling account refuses", s == 429, (s, r))
+    # Start clean: earlier requests also hit claude-a's shared five-hour limit.
+    req("PATCH", "/api/accounts/aaa", {"reset": True}, A)
+    s, r = req("POST", "/a/claude-a/v1/messages", {"model": "claude-sonnet-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K)
+    check("a sonnet-only limit", s == 429, (s, r))
+    mock_reset()
+    s, h, r = req("POST", "/a/claude-a/v1/messages", {"model": "claude-sonnet-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K, raw=True)
+    check("pinned cooling account refuses that model", s == 429 and not mock_log(), (s, r))
+    check("its retry-after is that account's own", 60 < int(h.get("retry-after", 0)) <= 120, h.get("retry-after"))
+    s, r = req("POST", "/a/claude-a/v1/messages", {"model": "claude-opus-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K)
+    check("a sonnet limit leaves opus on the same account", s == 429 and len(mock_log()) == 1, (s, r))
+    a = {x["label"]: x for x in req("GET", "/api/state", headers=A)[1]["accounts"]}["claude-a"]
+    check("a shared limit cools the whole account", a["status"] == "cooling" and a["cooldown_until"] > time.time() + 60, a)
     off = next(a["label"] for a in req("GET", "/api/state", headers=A)[1]["accounts"] if a["status"] == "disabled")
     s, h, body = req("POST", f"/a/{off}/v1/messages", {"model": "claude-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]}, K, raw=True)
     check("pinned disabled account is not a rate limit", s == 503 and b"rate_limit" not in body and "retry-after" not in h, (s, body))
@@ -265,6 +305,8 @@ try:
     time.sleep(0.2)
     last = req("GET", "/api/requests?limit=1", headers=A)[1][0]
     check("usage read from untyped codex stream", last["input"] == 20 and last["output"] == 4, last)
+    s, h, body = req("POST", "/v1/responses", {"model": "gpt-dataonly", "input": "hi", "stream": True}, K, raw=True)
+    check("a data-only codex stream that finishes is not cut", s == 200 and b"response.done" in body, body[-200:])
     up = last_upstream("/codex/responses")["headers"]
     check("codex headers", up["originator"] == "codex_cli_rs" and up["user-agent"].startswith("codex_cli_rs/0.160.1") and up["chatgpt-account-id"] == "acct-123")
 
@@ -362,6 +404,16 @@ try:
 
     s, h, body = req("POST", "/v1beta/models/gemini-x:streamGenerateContent?alt=sse", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K, raw=True)
     check("native streamGenerateContent", s == 200 and b'"text":"hello' in body and b"finishReason" in body, body[:300])
+    try:
+        out = req("POST", "/v1beta/models/gemini-cutoff:streamGenerateContent?alt=sse", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K, raw=True)
+    except http.client.IncompleteRead as e:
+        out = e
+    check("a cut-off native gemini stream breaks the connection", isinstance(out, http.client.IncompleteRead) and b"hello" in out.partial, out)
+    check("and is logged as a failure", req("GET", "/api/requests", headers=A)[1][0]["error"] == "the upstream stream ended early")
+    s, h, body = req("POST", "/v1beta/models/gemini-blocked:streamGenerateContent?alt=sse", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K, raw=True)
+    check("a prompt blocked for safety is a normal end", s == 200 and b"blockReason" in body, body[-200:])
+    s, h, body = req("POST", "/v1/chat/completions", {"model": "gemini-blocked", "stream": True, "messages": [{"role": "user", "content": "hi"}]}, K, raw=True)
+    check("and reads as content_filter in chat", s == 200 and b'"finish_reason":"content_filter"' in body and b"ended early" not in body, body[-300:])
 
     s, r = req("POST", "/v1beta/models/gemini-x:countTokens", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}, K)
     check("native countTokens", s == 200 and r["totalTokens"] == 9, r)
@@ -371,6 +423,14 @@ try:
 
     s, r = req("GET", "/v1/models?key=" + KEY)
     check("?key= auth", s == 200, r)
+    mock_reset()
+    s, r = req("POST", "/v1/messages?beta=true&key=" + KEY, {"model": "claude-x", "max_tokens": 10, "messages": [{"role": "user", "content": "x"}]})
+    up = last_upstream("/v1/messages")
+    check("?key= is not sent upstream", s == 200 and KEY not in up["path"] and "beta=true" in up["path"], (s, up["path"]))
+    for bad in ["/v1/responses/../../backend-api/me", "/v1/responses/%2e%2e/x", "/v1/responses/a/b"]:
+        mock_reset()
+        s, r = req("POST", bad, {"model": "gpt-x", "input": "x"}, K)
+        check(f"{bad} is refused", s == 404 and not mock_log(), (s, r))
 
     # 429 cooldown + rotation, and refresh of an expired access token.
     mock_reset()
@@ -383,7 +443,7 @@ try:
 
     s, st = req("GET", "/api/state", headers=A)
     accs = {a["label"]: a for a in st["accounts"]}
-    check("gemini 429 account cooling", accs["gemini-a"]["status"] == "cooling" and accs["gemini-a"]["cooldown_until"] > time.time() + 30, accs["gemini-a"])
+    check("gemini 429 cools that model", accs["gemini-a"]["model_cooldowns"].get("gemini-x", 0) > time.time() + 30, accs["gemini-a"])
     check("gemini 401 account refreshed", accs["gemini-c"]["status"] == "ready" and accs["gemini-c"]["last_refresh"] > 0, accs["gemini-c"])
     saved = json.load(open(os.path.join(HOME, "accounts", "gcc.json")))
     check("gemini refreshed token persisted", saved["access_token"] == "gemini-ok-refreshed" and saved["refresh_token"] == "gemini-rt-good-2", saved)
@@ -397,7 +457,10 @@ try:
     s, r = req("POST", "/api/login/start", {"provider": "gemini"}, A)
     check("gemini login start", s == 200 and "accounts.google.com" in r["url"] and "127.0.0.1:1456" in r["hint"], r)
     state = urllib.parse.parse_qs(urllib.parse.urlparse(r["url"]).query)["state"][0]
-    s, r = req("POST", "/api/login/complete", {"flow_id": r["flow_id"], "callback": f"http://127.0.0.1:1456/oauth2callback?code=gemini-code-good&state={state}"}, A)
+    flow = r["flow_id"]
+    s, r = req("POST", "/api/login/complete", {"flow_id": flow, "callback": "http://127.0.0.1:1456/oauth2callback?code=attacker-code"}, A)
+    check("gemini login needs the state", s != 200 and "state" in json.dumps(r), (s, r))
+    s, r = req("POST", "/api/login/complete", {"flow_id": flow, "callback": f"http://127.0.0.1:1456/oauth2callback?code=gemini-code-good&state={state}"}, A)
     check("gemini login completes", s == 200 and r["account"]["email"] == "new-gemini-login@x" and r["account"]["provider"] == "gemini", r)
     new_acc = json.load(open(os.path.join(HOME, "accounts", r["account"]["id"] + ".json")))
     check("gemini login ran code assist setup", new_acc["project_id"] == "proj-new-login" and new_acc["tier"] == "Free", new_acc)
@@ -458,6 +521,21 @@ try:
     time.sleep(0.5)
     tslog = open(os.path.join(HOME, "ts.log")).read()
     check("leaving tailscale removes only our mount", "funnel --yes --https=10000 --set-path / off" in tslog, tslog)
+    # Funnel opens the whole port, so a port that serves something else is left alone.
+    hp = "box.tailnet.ts.net:8443"
+    json.dump({"Web": {hp: {"Handlers": {"/grafana": {"Proxy": "http://127.0.0.1:3000"}}}}, "AllowFunnel": {hp: False}}, open(os.path.join(HOME, "ts-state.json"), "w"))
+    open(os.path.join(HOME, "ts.log"), "w").close()
+    req("PATCH", "/api/connect", {"mode": "tailscale", "ts_port": 8443}, A)
+    for _ in range(50):
+        st = req("GET", "/api/state", headers=A)[1]
+        if st["tunnel"]["error"]:
+            break
+        time.sleep(0.1)
+    check("funnel refuses a port with other services", not st["tunnel"]["connected"] and "/grafana" in (st["tunnel"]["error"] or "")
+          and "funnel" not in open(os.path.join(HOME, "ts.log")).read(), st["tunnel"])
+    req("PATCH", "/api/connect", {"mode": "off"}, A)
+    os.remove(os.path.join(HOME, "ts-state.json"))
+    time.sleep(0.3)
 
     # ---------------- relay
     relay = subprocess.Popen([BIN, "relay", "--listen", f"127.0.0.1:{RELAY}", "--data", os.path.join(HOME, "relay")], env=dict(ENV, CLIPX_LOG="warn"), stderr=open(os.path.join(HOME, "relay.log"), "a"))
@@ -720,17 +798,33 @@ elif a == ["connect", "unlink"]:
     target = {"x86_64": "x86_64-unknown-linux-musl", "aarch64": "aarch64-unknown-linux-musl"}[platform.machine()]
     rel = os.path.join(HOME, "release")
     os.makedirs(rel)
-    def publish(binary):
+    # Releases are signed with minisign; these tests sign with throwaway keys.
+    signer = shutil.which("minisign") or shutil.which("rsign")
+    assert signer, "the update tests need minisign or rsign (cargo install rsign2) on PATH"
+    rsign = os.path.basename(signer) == "rsign"
+    def keygen(name):
+        pub, sec = os.path.join(HOME, name + ".pub"), os.path.join(HOME, name + ".key")
+        args = ["generate", "-W", "-f", "-p", pub, "-s", sec] if rsign else ["-G", "-W", "-f", "-p", pub, "-s", sec]
+        subprocess.run([signer] + args, check=True, capture_output=True)
+        return open(pub).read().splitlines()[1], sec
+    release_key, release_sec = keygen("release")
+    _, other_sec = keygen("other")
+    def sign(sec):
+        sums = os.path.join(rel, "SHA256SUMS")
+        args = ["sign", "-W", "-s", sec, sums] if rsign else ["-S", "-s", sec, "-m", sums]
+        subprocess.run([signer] + args, check=True, capture_output=True)
+    def publish(binary, sec=release_sec):
         with tarfile.open(os.path.join(rel, f"clipx-{target}.tar.gz"), "w:gz") as t:
             t.add(binary, arcname="clipx")
         h = hashlib.sha256(open(os.path.join(rel, f"clipx-{target}.tar.gz"), "rb").read()).hexdigest()
         open(os.path.join(rel, "SHA256SUMS"), "w").write(f"{h}  clipx-{target}.tar.gz\n")
+        sign(sec)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), lambda *a: http.server.SimpleHTTPRequestHandler(*a, directory=rel))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     inst = os.path.join(HOME, "inst")
     os.makedirs(inst)
     shutil.copy(BIN, os.path.join(inst, "clipx"))
-    UPD = dict(ENV, CLIPX_HOME=os.path.join(HOME, "upd-home"), CLIPX_DOWNLOAD_BASE=f"http://127.0.0.1:{srv.server_port}")
+    UPD = dict(ENV, CLIPX_HOME=os.path.join(HOME, "upd-home"), CLIPX_DOWNLOAD_BASE=f"http://127.0.0.1:{srv.server_port}", CLIPX_RELEASE_KEY=release_key)
     publish(BIN)
     out = subprocess.run([os.path.join(inst, "clipx"), "update"], env=UPD, capture_output=True, text=True)
     check("clipx update knows when it is current", out.returncode == 0 and "up to date" in out.stdout, (out.stdout, out.stderr))
@@ -743,10 +837,23 @@ elif a == ["connect", "unlink"]:
     newer = os.path.join(HOME, "newer")
     open(newer, "w").write("#!/bin/sh\necho clipx 9.9.9\n")
     os.chmod(newer, 0o755)
+    untouched = lambda: open(os.path.join(inst, "clipx"), "rb").read() == open(BIN, "rb").read()
     publish(newer)
     open(os.path.join(rel, "SHA256SUMS"), "w").write("0" * 64 + f"  clipx-{target}.tar.gz\n")
+    sign(release_sec)
     out = subprocess.run([os.path.join(inst, "clipx"), "update"], env=UPD, capture_output=True, text=True)
-    check("clipx update refuses a bad checksum", out.returncode != 0 and "checksum" in out.stderr and open(os.path.join(inst, "clipx"), "rb").read() == open(BIN, "rb").read(), (out.stdout, out.stderr))
+    check("clipx update refuses a bad checksum", out.returncode != 0 and "checksum" in out.stderr and untouched(), (out.stdout, out.stderr))
+    publish(newer, sec=other_sec)
+    out = subprocess.run([os.path.join(inst, "clipx"), "update"], env=UPD, capture_output=True, text=True)
+    check("clipx update refuses a release signed by another key", out.returncode != 0 and "signature" in out.stderr and untouched(), (out.stdout, out.stderr))
+    publish(newer)
+    open(os.path.join(rel, "SHA256SUMS"), "a").write("# changed after signing\n")
+    out = subprocess.run([os.path.join(inst, "clipx"), "update"], env=UPD, capture_output=True, text=True)
+    check("clipx update refuses checksums changed after signing", out.returncode != 0 and "signature" in out.stderr and untouched(), (out.stdout, out.stderr))
+    publish(newer)
+    os.remove(os.path.join(rel, "SHA256SUMS.minisig"))
+    out = subprocess.run([os.path.join(inst, "clipx"), "update"], env=UPD, capture_output=True, text=True)
+    check("clipx update refuses an unsigned release", out.returncode != 0 and "signed" in out.stderr and untouched(), (out.stdout, out.stderr))
     publish(newer)
     out = subprocess.run([os.path.join(inst, "clipx"), "update"], env=UPD, capture_output=True, text=True)
     check("clipx update installs the new one", out.returncode == 0 and "updated clipx to v9.9.9" in out.stdout

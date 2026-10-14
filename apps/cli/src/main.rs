@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "clipx", version, about = "One proxy for your Claude and ChatGPT subscriptions, with remote access and a dashboard.")]
+#[command(name = "clipx", version, about = "One proxy for your Claude, ChatGPT and Gemini subscriptions, with remote access and a dashboard.")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -99,10 +99,15 @@ enum Cmd {
         #[arg(long)]
         data: Option<PathBuf>,
     },
+    /// Start the background service
     Start,
+    /// Stop the background service
     Stop,
+    /// Restart the background service
     Restart,
+    /// Show the last 200 lines of the log
     Logs {
+        /// Keep printing new lines as they come
         #[arg(short, long)]
         follow: bool,
     },
@@ -140,8 +145,8 @@ struct SetupArgs {
     /// Listen on all interfaces instead of 127.0.0.1.
     #[arg(long)]
     public: bool,
-    /// Remote access: tailscale, cloudflare, relay, or off. Default: tailscale when it is
-    /// running on this machine, otherwise cloudflare.
+    /// Remote access: tailscale, cloudflare, relay, or off. Default: Tailscale inside your
+    /// tailnet when it is running here; otherwise setup asks before going public.
     #[arg(long)]
     tunnel: Option<String>,
     /// Tailscale: HTTPS port (Funnel allows 443, 8443 and 10000).
@@ -805,6 +810,11 @@ async fn confirm(q: &str) -> bool {
     prompt(&format!("{q} [Y/n] ")).await.is_some_and(|a| !a.to_ascii_lowercase().starts_with('n'))
 }
 
+/// Like `confirm`, but only an explicit yes counts.
+async fn confirm_no(q: &str) -> bool {
+    prompt(&format!("{q} [y/N] ")).await.is_some_and(|a| a.to_ascii_lowercase().starts_with('y'))
+}
+
 fn json_files(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
     v.sort();
@@ -1100,8 +1110,9 @@ async fn setup_t3(api: &Api, interactive: bool) -> Result<Option<Value>, String>
 
 async fn setup(home: &Path, args: SetupArgs) -> Res {
     ctrl_c_skips_children();
-    std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
+    util::private_dir(home).map_err(|e| e.to_string())?;
     let fresh = !config::config_path(home).exists();
+    let interactive = std::io::stdin().is_terminal();
     let mut cfg = if fresh { Config::new() } else { Config::load(home).map_err(|e| e.to_string())? };
     if let Some(p) = args.port {
         let host = cfg.listen.rsplit_once(':').map(|(h, _)| h.to_string()).unwrap_or_else(|| "127.0.0.1".into());
@@ -1116,10 +1127,23 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
         (Some("cloudflare" | "cf"), _) => Some(TunnelMode::Cloudflare),
         (Some("tailscale" | "ts"), _) => Some(TunnelMode::Tailscale),
         (Some(other), _) => return Err(format!("unknown tunnel {other}; use tailscale, cloudflare, relay or off")),
-        (None, None) if fresh => Some(if tailscale_running() { TunnelMode::Tailscale } else { TunnelMode::Cloudflare }),
+        // Never public without asking: Tailscale stays inside the tailnet, and a Cloudflare
+        // address needs a yes. T3 Code reaches clipx through T3 Connect either way.
+        (None, None) if fresh && tailscale_running() => {
+            cfg.connect.tailnet_only = true;
+            Some(TunnelMode::Tailscale)
+        }
+        (None, None) if fresh => Some(
+            if interactive
+                && confirm_no("Give clipx a public web address (a Cloudflare tunnel), so you can use it from machines outside this one? Anyone with the address still needs a clipx key. T3 Code doesn't need it.").await
+            {
+                TunnelMode::Cloudflare
+            } else {
+                TunnelMode::Off
+            },
+        ),
         _ => None,
     };
-    let auto_tunnel = fresh && args.tunnel.is_none() && args.relay.is_none();
     if let Some(p) = args.ts_port {
         cfg.connect.ts_port = Some(p);
     }
@@ -1154,11 +1178,12 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
     }
 
     println!("clipx home   {}", home.display());
+    // Printed now, so an error or Ctrl+C later in setup can't lose it.
+    if let Some(k) = &new_key {
+        println!("api key      {k}   (shown once; save it)");
+    }
     if args.no_service {
         println!("config written. run `clipx serve` to start in the foreground.");
-        if let Some(k) = &new_key {
-            println!("api key      {k}");
-        }
         return Ok(());
     }
     let how = service::install_and_start(home)?;
@@ -1184,7 +1209,7 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
         print!("remote       connecting");
         use std::io::Write;
         let mut said_download = false;
-        for i in 0..90 {
+        for _ in 0..90 {
             if state["tunnel"]["connected"] == true {
                 break;
             }
@@ -1192,11 +1217,6 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
             if !said_download && state["tunnel"]["error"].as_str().is_some_and(|e| e.starts_with("downloading cloudflared")) {
                 print!(" (downloading cloudflared, about 40 MB)");
                 said_download = true;
-            }
-            // Tailscale was only a guess; if Funnel is not allowed here, use a quick tunnel.
-            if auto_tunnel && i == 30 && cfg.connect.mode == TunnelMode::Tailscale {
-                print!(" ({}; trying cloudflare)", state["tunnel"]["error"].as_str().unwrap_or("tailscale did not answer"));
-                api.patch("/connect", json!({"mode": "cloudflare"})).await?;
             }
             print!(".");
             std::io::stdout().flush().ok();
@@ -1210,7 +1230,6 @@ async fn setup(home: &Path, args: SetupArgs) -> Res {
             println!("remote       not up yet ({}); it keeps retrying", state["tunnel"]["error"].as_str().unwrap_or("no answer"));
         }
     }
-    let interactive = std::io::stdin().is_terminal();
     let mut use_t3 = !args.no_t3 && t3::installed();
     if !args.no_t3 && !use_t3 && interactive && confirm("\nT3 Code is not installed. Install it? clipx adds your accounts to it, and app.t3.codes reaches it from anywhere.").await {
         install_libatomic().await;

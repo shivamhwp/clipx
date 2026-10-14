@@ -16,7 +16,7 @@ curl -fsSL https://clix.lakebed.app/install | sh
 
 That one command walks you through setup:
 
-1. Runs clipx as a background service and makes it reachable from your other machines.
+1. Runs clipx as a background service. If Tailscale is running, it puts clipx on your tailnet so your own devices can reach it. Otherwise it asks before giving clipx a public address.
 2. Signs you in to your Claude, ChatGPT and Gemini accounts. Add as many as you want. If you already use CLIProxyAPI, it can reuse those logins.
 3. Installs T3 Code, Claude Code and Codex if you don't have them.
 4. Adds Claude (clipx) and ChatGPT (clipx) to T3 Code. If you haven't picked a default model in T3, new threads use Claude (clipx).
@@ -27,6 +27,12 @@ When it's done, open [app.t3.codes](https://app.t3.codes), sign in, and your mac
 Each account signs in through your browser, so setup asks you a few things along the way. On a bare Linux box it also offers to install `libatomic1`, which T3 needs.
 
 To update, run `clipx update`. It gets the latest release, restarts clipx, and updates T3's clipx providers too.
+
+Releases are signed with [minisign](https://jedisct1.github.io/minisign/). `clipx update` won't install a release whose signature doesn't match, and the installer checks it too when minisign is installed. To check a download yourself:
+
+```sh
+minisign -Vm SHA256SUMS -P RWSDOk8y8H3Zm0Gl9QWbqPwkgesR+ur/nG+ZvB6naZK2Rh/2YtsXztzk
+```
 
 ## T3 Code
 
@@ -64,7 +70,8 @@ For anything else, use the base URL `https://your-url/v1` and the API key `sk-cl
 
 You only need this to use clipx from other machines. T3 already reaches it through T3 Connect.
 
-- `clipx connect tailscale` gives you a fixed `https://<box>.<tailnet>.ts.net` address. clipx picks this when Tailscale is running.
+- `clipx connect tailscale --tailnet-only` gives you a fixed `https://<box>.<tailnet>.ts.net` address that only your own devices can reach. Setup picks this when Tailscale is running.
+- `clipx connect tailscale` puts that address on the internet with Tailscale Funnel. Funnel opens the whole port, so clipx won't use a port that already serves something else.
 - `clipx connect cloudflare` works without an account, but the address changes every restart.
 - `clipx connect off` keeps clipx on this machine only.
 
@@ -111,3 +118,7 @@ cd apps/site && npx lakebed deploy   # publish clix.lakebed.app
 ```
 
 Using your subscription logins outside the official apps may go against the providers' terms. Check the terms for your plan.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

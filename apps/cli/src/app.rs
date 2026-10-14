@@ -88,8 +88,9 @@ impl App {
         self.cfg.read().unwrap().save(&self.home)
     }
 
-    /// Pick an account for `provider`. `pinned` restricts to one account by id or label.
-    pub fn pick(&self, provider: Provider, pinned: Option<&str>, tried: &[String]) -> Result<Arc<Account>, PickError> {
+    /// Pick an account for `provider` that can serve `model`. `pinned` restricts to one
+    /// account by id or label.
+    pub fn pick(&self, provider: Provider, model: Option<&str>, pinned: Option<&str>, tried: &[String]) -> Result<Arc<Account>, PickError> {
         let t = now();
         if let Some(name) = pinned {
             let acc = self.store.get(name).ok_or_else(|| PickError::NoSuchAccount(name.to_string()))?;
@@ -99,8 +100,9 @@ impl App {
             if tried.contains(&acc.id()) {
                 return Err(PickError::Exhausted(provider));
             }
-            if !acc.usable(t) {
-                return Err(PickError::Unavailable(acc.label(), acc.status()));
+            if !acc.usable(t, model) {
+                let status = if acc.status() == "ready" { "cooling" } else { acc.status() };
+                return Err(PickError::Unavailable(acc.label(), status));
             }
             return Ok(acc);
         }
@@ -108,7 +110,7 @@ impl App {
             .store
             .list()
             .into_iter()
-            .filter(|a| a.provider() == provider && a.usable(t) && !tried.contains(&a.id()))
+            .filter(|a| a.provider() == provider && a.usable(t, model) && !tried.contains(&a.id()))
             .collect();
         if candidates.is_empty() {
             let any = self.store.list().into_iter().any(|a| a.provider() == provider);
@@ -130,13 +132,13 @@ impl App {
         }
     }
 
-    /// Earliest time any account of this provider comes back from cooldown.
-    pub fn next_available(&self, provider: Provider) -> Option<u64> {
+    /// Earliest time any account of this provider can serve `model` again after a cooldown.
+    pub fn next_available(&self, provider: Provider, model: Option<&str>) -> Option<u64> {
         self.store
             .list()
             .iter()
-            .filter(|a| a.provider() == provider && !a.file.read().unwrap().disabled)
-            .map(|a| a.state.lock().unwrap().cooldown_until)
+            .filter(|a| a.provider() == provider && !a.file.read().unwrap().disabled && !a.state.lock().unwrap().needs_login)
+            .map(|a| a.free_at(model))
             .filter(|&c| c > now())
             .min()
     }
@@ -218,6 +220,21 @@ pub fn quota_from_headers(provider: Provider, h: &HeaderMap) -> Vec<QuotaWindow>
 }
 
 /// How long to rest an account after a 429.
+/// The model family a 429 is limited to, or None when the whole account is out.
+/// Claude names the limit it hit (`seven_day_opus` is Opus only, `five_hour` is everything).
+/// ChatGPT's usage windows are shared by all models. Gemini quotas are per model.
+pub fn limited_family(provider: Provider, h: &HeaderMap, model: &str) -> Option<String> {
+    match provider {
+        Provider::Claude => {
+            let claim = h.get("anthropic-ratelimit-unified-representative-claim").and_then(|v| v.to_str().ok())?;
+            let family = crate::store::model_family(claim);
+            (family != claim).then(|| family.to_string())
+        }
+        Provider::Codex => None,
+        Provider::Gemini => Some(crate::store::model_family(model).to_string()),
+    }
+}
+
 pub fn cooldown_secs(provider: Provider, h: &HeaderMap, body: &[u8]) -> u64 {
     let t = now();
     if let Some(secs) = h.get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok())
@@ -277,6 +294,16 @@ mod tests {
             h.insert(HeaderName::from_bytes(k.as_bytes()).unwrap(), HeaderValue::from_str(v).unwrap());
         }
         h
+    }
+
+    #[test]
+    fn rate_limit_scope() {
+        let claim = |c: &str| headers(&[("anthropic-ratelimit-unified-representative-claim", c)]);
+        assert_eq!(limited_family(Provider::Claude, &claim("seven_day_opus"), "claude-sonnet-5-5").as_deref(), Some("opus"));
+        assert_eq!(limited_family(Provider::Claude, &claim("five_hour"), "claude-opus-5-5"), None);
+        assert_eq!(limited_family(Provider::Claude, &HeaderMap::new(), "claude-opus-5-5"), None);
+        assert_eq!(limited_family(Provider::Codex, &HeaderMap::new(), "gpt-5.6-sol"), None);
+        assert_eq!(limited_family(Provider::Gemini, &HeaderMap::new(), "gemini-3-pro").as_deref(), Some("pro"));
     }
 
     #[test]

@@ -100,6 +100,8 @@ pub struct QuotaWindow {
 #[derive(Default, Debug)]
 pub struct AccountState {
     pub cooldown_until: u64,
+    /// Rate limits that hit one model family (say Opus) and leave the rest of the account usable.
+    pub model_cooldowns: std::collections::HashMap<String, u64>,
     pub needs_login: bool,
     pub last_error: Option<String>,
     pub last_used: u64,
@@ -109,6 +111,14 @@ pub struct AccountState {
     pub output_tokens: u64,
     pub quota: Vec<QuotaWindow>,
     pub quota_at: u64,
+}
+
+/// The part of a model name that rate limits are counted against: Opus and Sonnet have
+/// separate weekly limits, Gemini Pro and Flash separate daily quotas.
+pub fn model_family(model: &str) -> &str {
+    const FAMILIES: &[&str] = &["opus", "sonnet", "haiku", "flash-lite", "flash", "pro"];
+    let m = model.to_ascii_lowercase();
+    FAMILIES.iter().find(|f| m.contains(*f)).copied().unwrap_or(model)
 }
 
 pub struct Account {
@@ -145,10 +155,18 @@ impl Account {
         }
     }
 
-    pub fn usable(&self, at: u64) -> bool {
+    /// Whether a request for `model` can use this account at `at`.
+    pub fn usable(&self, at: u64, model: Option<&str>) -> bool {
         let f = self.file.read().unwrap();
         let s = self.state.lock().unwrap();
-        !f.disabled && !s.needs_login && s.cooldown_until <= at
+        !f.disabled && !s.needs_login && s.cooldown_until <= at && model.is_none_or(|m| s.model_cooldowns.get(model_family(m)).is_none_or(|&c| c <= at))
+    }
+
+    /// When this account can next serve `model`.
+    pub fn free_at(&self, model: Option<&str>) -> u64 {
+        let s = self.state.lock().unwrap();
+        let family = model.and_then(|m| s.model_cooldowns.get(model_family(m)).copied()).unwrap_or(0);
+        s.cooldown_until.max(family)
     }
 
     pub fn summary(&self) -> Value {
@@ -173,6 +191,7 @@ impl Account {
             "last_refresh": f.last_refresh,
             "created_at": f.created_at,
             "cooldown_until": s.cooldown_until,
+            "model_cooldowns": s.model_cooldowns.iter().filter(|(_, c)| **c > now()).collect::<std::collections::BTreeMap<_, _>>(),
             "last_error": s.last_error,
             "last_used": s.last_used,
             "requests": s.requests,
@@ -206,7 +225,8 @@ pub struct Store {
 impl Store {
     pub fn open(home: &Path) -> std::io::Result<Self> {
         let dir = home.to_path_buf();
-        std::fs::create_dir_all(dir.join("accounts"))?;
+        crate::util::private_dir(&dir)?;
+        crate::util::private_dir(&dir.join("accounts"))?;
         let mut accounts = Vec::new();
         for entry in std::fs::read_dir(dir.join("accounts"))? {
             let path = entry?.path();
@@ -219,10 +239,17 @@ impl Store {
             }
         }
         accounts.sort_by_key(|a| a.file.read().unwrap().created_at);
-        let keys = std::fs::read(dir.join("keys.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let keys_path = dir.join("keys.json");
+        let keys = match std::fs::read(&keys_path) {
+            Err(_) => Vec::new(),
+            Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
+                // Move it aside rather than let the next save overwrite every key in it.
+                let aside = dir.join(format!("keys.json.corrupt-{}", now()));
+                let _ = std::fs::rename(&keys_path, &aside);
+                tracing::error!("keys.json is not valid JSON ({e}); moved it to {} and started with no keys", aside.display());
+                Vec::new()
+            }),
+        };
         Ok(Self { dir, accounts: RwLock::new(accounts), keys: RwLock::new(keys) })
     }
 
@@ -277,6 +304,7 @@ impl Store {
                 s.needs_login = false;
                 s.last_error = None;
                 s.cooldown_until = 0;
+                s.model_cooldowns.clear();
             }
             self.save_account(&acc)?;
             return Ok(acc);
@@ -540,5 +568,29 @@ mod tests {
         assert!(store.rename(&file.id, "a'b").is_err());
         assert!(store.rename(&file.id, "work-1").is_ok());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn broken_keys_file_is_moved_aside() {
+        let dir = std::env::temp_dir().join(format!("clipx-store-{}", random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("keys.json"), b"[{\"id\": ").unwrap();
+        let store = Store::open(&dir).unwrap();
+        assert!(store.keys.read().unwrap().is_empty());
+        let aside: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("keys.json.corrupt-")).collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(std::fs::read(aside[0].path()).unwrap(), b"[{\"id\": ");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&dir).unwrap().permissions()) & 0o777, 0o700);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn model_families() {
+        assert_eq!(model_family("claude-opus-5-5"), "opus");
+        assert_eq!(model_family("claude-sonnet-5-5"), "sonnet");
+        assert_eq!(model_family("gemini-3-flash-lite"), "flash-lite");
+        assert_eq!(model_family("gemini-3-pro-preview"), "pro");
+        assert_eq!(model_family("gpt-5.6-sol"), "gpt-5.6-sol");
     }
 }

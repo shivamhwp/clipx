@@ -9,43 +9,18 @@
 #   curl -fsSL https://clix.lakebed.app/install | sh -s -- --relay https://relay.example.com --name mybox
 #   curl -fsSL https://clix.lakebed.app/install | sh -s -- --tunnel off --public
 #
-# CLIPX_REPO, CLIPX_VERSION (a tag, default latest), CLIPX_DOWNLOAD_BASE (a mirror) and
-# CLIPX_INSTALL_DIR override defaults. CLIPX_NO_SETUP=1 installs the binary only, for a
+# CLIPX_REPO, CLIPX_VERSION (a tag, default latest), CLIPX_DOWNLOAD_BASE (a mirror),
+# CLIPX_RELEASE_KEY and CLIPX_INSTALL_DIR override defaults. CLIPX_NO_SETUP=1 installs the binary only, for a
 # machine that runs T3 Code but uses clipx from another machine (`clipx t3 --server`).
 set -eu
 
-REPO="${CLIPX_REPO:-shivamhwp/clipx}"
-VERSION="${CLIPX_VERSION:-latest}"
+# Releases sign SHA256SUMS with this minisign key (minisign.pub in the repo). When
+# minisign is installed, the download is checked against it too. CLIPX_RELEASE_KEY
+# replaces it for a fork that signs its own releases, as it does for `clipx update`.
+RELEASE_KEY="${CLIPX_RELEASE_KEY:-RWSDOk8y8H3Zm0Gl9QWbqPwkgesR+ur/nG+ZvB6naZK2Rh/2YtsXztzk}"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'clipx install: %s\n' "$*" >&2; exit 1; }
-
-os=$(uname -s)
-arch=$(uname -m)
-case "$os/$arch" in
-  Linux/x86_64 | Linux/amd64) target=x86_64-unknown-linux-musl ;;
-  Linux/aarch64 | Linux/arm64) target=aarch64-unknown-linux-musl ;;
-  Darwin/arm64) target=aarch64-apple-darwin ;;
-  Darwin/x86_64) target=x86_64-apple-darwin ;;
-  *) die "no prebuilt binary for $os/$arch; build from source with: cargo install --git https://github.com/$REPO" ;;
-esac
-
-if [ -n "${CLIPX_INSTALL_DIR:-}" ]; then
-  dir=$CLIPX_INSTALL_DIR
-elif [ "$(id -u)" = 0 ]; then
-  dir=/usr/local/bin
-else
-  dir=$HOME/.local/bin
-fi
-mkdir -p "$dir"
-
-if [ -n "${CLIPX_DOWNLOAD_BASE:-}" ]; then
-  base=$CLIPX_DOWNLOAD_BASE
-elif [ "$VERSION" = latest ]; then
-  base="https://github.com/$REPO/releases/latest/download"
-else
-  base="https://github.com/$REPO/releases/download/$VERSION"
-fi
 
 fetch() {
   if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"
@@ -58,35 +33,79 @@ sha256() {
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-asset="clipx-$target.tar.gz"
-say "downloading $asset"
-if fetch "$base/$asset" "$tmp/$asset" && fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS"; then
-  want=$(grep " $asset\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)
-  got=$(sha256 "$tmp/$asset")
-  [ -n "$want" ] && [ "$want" = "$got" ] || die "checksum mismatch for $asset"
-  tar -xzf "$tmp/$asset" -C "$tmp"
-  install -m 0755 "$tmp/clipx" "$dir/clipx" 2>/dev/null || { cp "$tmp/clipx" "$dir/clipx"; chmod 0755 "$dir/clipx"; }
-elif command -v cargo >/dev/null 2>&1; then
-  say "no release download; building from source with cargo"
-  cargo install --locked --git "https://github.com/$REPO" --root "$tmp/cargo" clipx
-  cp "$tmp/cargo/bin/clipx" "$dir/clipx"
-else
-  die "could not download $asset and cargo is not installed"
-fi
-say "installed $dir/clipx ($("$dir/clipx" --version))"
+# Everything runs from here, so a download cut off halfway runs nothing.
+main() {
+  REPO="${CLIPX_REPO:-shivamhwp/clipx}"
+  VERSION="${CLIPX_VERSION:-latest}"
 
-case ":$PATH:" in
-  *":$dir:"*) ;;
-  *) say "add $dir to your PATH:  export PATH=\"$dir:\$PATH\"" ;;
-esac
+  os=$(uname -s)
+  arch=$(uname -m)
+  case "$os/$arch" in
+    Linux/x86_64 | Linux/amd64) target=x86_64-unknown-linux-musl ;;
+    Linux/aarch64 | Linux/arm64) target=aarch64-unknown-linux-musl ;;
+    Darwin/arm64) target=aarch64-apple-darwin ;;
+    Darwin/x86_64) target=x86_64-apple-darwin ;;
+    *) die "no prebuilt binary for $os/$arch; build from source with: cargo install --git https://github.com/$REPO" ;;
+  esac
 
-[ -n "${CLIPX_NO_SETUP:-}" ] && exit 0
-say ""
-# Under `curl … | sh` the script itself is standard input. Hand setup the terminal so it
-# can sign in to accounts and connect T3.
-if [ ! -t 0 ] && (: </dev/tty) 2>/dev/null; then
-  exec "$dir/clipx" setup "$@" </dev/tty
-fi
-exec "$dir/clipx" setup "$@"
+  if [ -n "${CLIPX_INSTALL_DIR:-}" ]; then
+    dir=$CLIPX_INSTALL_DIR
+  elif [ "$(id -u)" = 0 ]; then
+    dir=/usr/local/bin
+  else
+    dir=$HOME/.local/bin
+  fi
+  mkdir -p "$dir"
+
+  if [ -n "${CLIPX_DOWNLOAD_BASE:-}" ]; then
+    base=$CLIPX_DOWNLOAD_BASE
+  elif [ "$VERSION" = latest ]; then
+    base="https://github.com/$REPO/releases/latest/download"
+  else
+    base="https://github.com/$REPO/releases/download/$VERSION"
+  fi
+
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  asset="clipx-$target.tar.gz"
+  say "downloading $asset"
+  if fetch "$base/$asset" "$tmp/$asset" && fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS"; then
+    if command -v minisign >/dev/null 2>&1; then
+      fetch "$base/SHA256SUMS.minisig" "$tmp/SHA256SUMS.minisig" || die "this release is not signed"
+      minisign -Vq -P "$RELEASE_KEY" -m "$tmp/SHA256SUMS" >/dev/null || die "the release signature does not match"
+      say "signature ok"
+    fi
+    want=$(grep " $asset\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)
+    got=$(sha256 "$tmp/$asset")
+    [ -n "$want" ] && [ "$want" = "$got" ] || die "checksum mismatch for $asset"
+    tar -xzf "$tmp/$asset" -C "$tmp"
+    install -m 0755 "$tmp/clipx" "$dir/clipx" 2>/dev/null || { cp "$tmp/clipx" "$dir/clipx"; chmod 0755 "$dir/clipx"; }
+  elif command -v cargo >/dev/null 2>&1; then
+    say "no release download; building from source with cargo"
+    if [ "$VERSION" = latest ]; then
+      cargo install --locked --git "https://github.com/$REPO" --root "$tmp/cargo" clipx
+    else
+      cargo install --locked --git "https://github.com/$REPO" --tag "$VERSION" --root "$tmp/cargo" clipx
+    fi
+    cp "$tmp/cargo/bin/clipx" "$dir/clipx"
+  else
+    die "could not download $asset and cargo is not installed"
+  fi
+  say "installed $dir/clipx ($("$dir/clipx" --version))"
+
+  case ":$PATH:" in
+    *":$dir:"*) ;;
+    *) say "add $dir to your PATH:  export PATH=\"$dir:\$PATH\"" ;;
+  esac
+
+  [ -n "${CLIPX_NO_SETUP:-}" ] && exit 0
+  say ""
+  # Under `curl … | sh` the script itself is standard input. Hand setup the terminal so it
+  # can sign in to accounts and connect T3.
+  if [ ! -t 0 ] && (: </dev/tty) 2>/dev/null; then
+    exec "$dir/clipx" setup "$@" </dev/tty
+  fi
+  exec "$dir/clipx" setup "$@"
+}
+
+main "$@"
