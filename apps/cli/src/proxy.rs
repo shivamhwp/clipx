@@ -973,18 +973,22 @@ fn event_kind(ev: &sse::Event) -> Option<String> {
     if let Some(e) = &ev.event {
         return Some(e.clone());
     }
-    if !ev.data.starts_with('{') {
+    if !ev.data.trim_start().starts_with('{') {
         return None;
     }
     serde_json::from_str::<Value>(&ev.data).ok()?["type"].as_str().map(String::from)
 }
 
-fn is_final_event(ev: &sse::Event) -> bool {
-    ev.data == "[DONE]" || matches!(event_kind(ev).as_deref(), Some("message_stop" | "response.completed" | "response.incomplete" | "response.done"))
-}
-
-fn is_error_event(ev: &sse::Event) -> bool {
-    matches!(event_kind(ev).as_deref(), Some("error" | "response.failed"))
+/// Whether an event ends a stream: (with its final event, with an error the client can read).
+fn ending(ev: &sse::Event) -> (bool, bool) {
+    if ev.data == "[DONE]" {
+        return (true, false);
+    }
+    match event_kind(ev).as_deref() {
+        Some("message_stop" | "response.completed" | "response.incomplete" | "response.done") => (true, false),
+        Some("error" | "response.failed") => (false, true),
+        _ => (false, false),
+    }
 }
 
 impl Tap {
@@ -999,8 +1003,9 @@ impl Tap {
         if self.sse == Some(true) {
             self.parser.push(b, &mut self.events);
             for ev in self.events.drain(..) {
-                self.complete |= is_final_event(&ev);
-                self.ended_well |= is_final_event(&ev) || is_error_event(&ev);
+                let (fin, err) = ending(&ev);
+                self.complete |= fin;
+                self.ended_well |= fin || err;
                 absorb_usage(&mut self.tokens, &ev.data);
             }
         } else if self.buf.len() < 8 << 20 {
@@ -1013,8 +1018,9 @@ impl Tap {
                 // A client may hang up right after the final event, before its blank line.
                 self.parser.finish(&mut self.events);
                 for ev in self.events.drain(..) {
-                    self.complete |= is_final_event(&ev);
-                    self.ended_well |= is_final_event(&ev) || is_error_event(&ev);
+                    let (fin, err) = ending(&ev);
+                    self.complete |= fin;
+                    self.ended_well |= fin || err;
                     absorb_usage(&mut self.tokens, &ev.data);
                 }
             } else {
@@ -1306,12 +1312,13 @@ mod tests {
     #[test]
     fn final_events_by_name_or_json_type() {
         let ev = |event: Option<&str>, data: &str| sse::Event { event: event.map(String::from), data: data.to_string() };
-        assert!(is_final_event(&ev(Some("message_stop"), "{}")));
-        assert!(is_final_event(&ev(None, r#"{"type":"response.done","response":{}}"#)));
-        assert!(is_final_event(&ev(None, "[DONE]")));
-        assert!(!is_final_event(&ev(None, r#"{"type":"response.output_text.delta"}"#)));
-        assert!(is_error_event(&ev(None, r#"{"type":"response.failed","response":{}}"#)));
-        assert!(is_error_event(&ev(Some("error"), "{}")));
+        assert_eq!(ending(&ev(Some("message_stop"), "{}")), (true, false));
+        assert_eq!(ending(&ev(None, r#"{"type":"response.done","response":{}}"#)), (true, false));
+        assert_eq!(ending(&ev(None, r#"  {"type":"response.done","response":{}}"#)), (true, false));
+        assert_eq!(ending(&ev(None, "[DONE]")), (true, false));
+        assert_eq!(ending(&ev(None, r#"{"type":"response.output_text.delta"}"#)), (false, false));
+        assert_eq!(ending(&ev(None, r#"{"type":"response.failed","response":{}}"#)), (false, true));
+        assert_eq!(ending(&ev(Some("error"), "{}")), (false, true));
     }
 
     #[test]
